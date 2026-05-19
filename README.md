@@ -168,9 +168,3 @@ func attachMixer(_ mixer: ITMixer, to engine: AVAudioEngine) throws {
 ## License
 
 MIT. See `LICENSE`.
-
-## Related projects
-
-- [SwiftS3M](https://github.com/prestige-exe/SwiftS3M): Scream Tracker 3 decoder. Same shape as this package.
-- [SwiftXM](https://github.com/prestige-exe/SwiftXM): FastTracker II decoder. Same shape as this package.
-- [Relical](https://github.com/antisynthesis/relical): iOS app for the 16colo.rs archive; uses all three decoders to play scene music alongside the artwork.
