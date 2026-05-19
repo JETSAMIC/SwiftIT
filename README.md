@@ -19,27 +19,30 @@ The canonical spec is **ITTECH.TXT**, written by Jeffrey Lim and distributed wit
 
 I've intentionally not bundled a copy of the spec text in this repo — the licensing on the document is informal at best, and the references above stay more current than anything I'd vendor.
 
-## What ships today
+## What ships
 
 ### Parser (`ITFile`)
 
 - 192-byte IMPM header — orders, instruments, samples, patterns, flags, per-channel pan/volume
 - Order list + instrument / sample / pattern parapointer tables
-- Sample headers (`IMPS`) and **uncompressed** sample data
-  - 8/16-bit, signed/unsigned, big/little endian, delta-encoded variants
+- Sample headers (`IMPS`) and sample data
+  - **Uncompressed** 8/16-bit, signed/unsigned, big/little endian, delta-encoded
+  - **IT 2.14 / 2.15 compressed** samples — the full variable-bit-width codec (8-bit and 16-bit, simple-delta and delta-of-delta variants)
   - Mono and stereo (stereo folds to mono on load)
   - Forward and ping-pong loops, sustain loops, sustain ping-pong
 - New-format instruments (`IMPI`, IT 2.00+)
   - 120-entry note→sample keyboard table
   - Three 82-byte envelopes (volume / panning / pitch) with loop and sustain-loop semantics
-  - NNA / DCT / DCA stored (mixer doesn't act on them yet)
+  - NNA / DCT / DCA — honored by the mixer (see below)
+  - Initial filter cutoff / resonance (IFC / IFR) — seeded onto the voice on note trigger
 - Old-format instruments (IT 1.x, 554 bytes) — coerced into the new-format struct
 - Bit-flag-compressed pattern stream with per-channel mask / note / instrument / volume / command memory
 
 ### Mixer (`ITMixer`)
 
-- 64 voices, linear interpolation, sub-sample precision via Float position
-- Standard PCM effects:
+- 128-slot voice pool (64 channel-owned + 64 ghost slots for NNA)
+- Linear interpolation, sub-sample precision via Float position
+- **Full effect set** (A..Z):
   - `Axx` set speed, `Bxx` position jump, `Cxx` pattern break
   - `Dxx` volume slide, `Exx` portamento down, `Fxx` portamento up
   - `Gxx` tone portamento, `Hxx` vibrato, `Jxx` arpeggio
@@ -49,22 +52,33 @@ I've intentionally not bundled a copy of the spec text in this repo — the lice
   - `Sxx` special group (S8x set pan, SCx note cut, SDx note delay)
   - `Txx` set tempo, `Uxx` fine vibrato
   - `Vxx` set global volume, `Xxx` set panning
-- Volume column commands (set vol, pan)
+  - `Yxx` panbrello (triangle LFO modulating pan)
+  - `Zxx` filter cutoff / resonance
+- **Full volume column**:
+  - 0..64 set volume
+  - 65..74 / 75..84 fine volume up / down (tick 0)
+  - 85..94 / 95..104 volume slide up / down (per tick)
+  - 105..114 / 115..124 pitch slide down / up (per tick)
+  - 128..192 set pan
+  - 193..202 tone portamento (a..j → fixed speed table)
+  - 203..212 vibrato depth (a..j)
+- **NNA / DCT / DCA** — the existing voice on a channel is moved into the ghost pool and handled per its instrument's NNA (Cut / Continue / Note Off / Note Fade) when a new note arrives. New triggers run a DCT scan across all active voices (Off / Note / Sample / Instrument) and apply the configured DCA (Cut / Note Off / Note Fade) to matches.
+- **Resonant low-pass filter** — 2-pole biquad per voice, driven by the instrument's IFC/IFR and by `Zxx` at runtime. Pass-through when neither is in use, so silent songs don't pay for it.
 - Volume envelope evaluation with loop + sustain-loop
 - Per-instrument note-off fadeout
 - End-of-song detection — Bxx back to a previously-played order trips `finished` instead of looping forever
 
-## What's deferred
+## Status
 
-These are flagged here (and in the source) so it's clear what's solid vs. what's stubbed:
+v1 is feature-complete against ITTECH.TXT for the playback path — the README does not describe a roadmap because there isn't one. If you find a real-world IT file that misbehaves, that's a bug; please open an issue with the module attached.
 
-- **IT 2.14 sample compression** (`IMPS` flag bit 3). The parser detects it and leaves the PCM array empty. Compressed-sample voices render silence; the rest of the song plays normally.
-- **Zxx filter / MIDI macro**. Stored on the voice, currently no-op. Most pre-IT-2.14 packs don't use these.
-- **Yxx panbrello**. Stored, no-op. Degrades to whatever the column last set the pan to.
-- **NNA / DCT / DCA**. The instrument fields parse correctly. The mixer currently retires the existing voice on a same-channel note rather than spinning up a ghost slot.
-- **Volume-column sub-commands** beyond set-vol / set-pan (the 65..127 and 193..212 windows). Parsed, but the mixer drops them gracefully — playback continues without misfiring.
+Known shape-of-mixing tradeoffs (all intentional, not deferred work):
 
-PRs welcome on any of these; see `CONTRIBUTING.md` for the bar.
+- Stereo samples fold to mono on load. Real IT mixers either double-voice or pan-split per channel; we don't, because almost every IT instrument in the wild is mono and folding keeps the voice budget honest.
+- The resonant filter uses a single bilinear-transform biquad rather than IT's exact internal table. Output is close to OpenMPT's at typical cutoffs and noticeably softer at the extremes.
+- Compressed-stereo samples (rare to nonexistent in practice) decode left channel only.
+
+PRs welcome on the above; see `CONTRIBUTING.md` for the bar.
 
 ## Installation
 

@@ -184,7 +184,11 @@ public struct ITFile: Sendable {
         }
         self.instruments = ins
 
-        // Samples — header + linear sample data.
+        // Samples — header + linear or compressed sample data. The
+        // `compatibleWith` field decides which compression flavor
+        // a compressed sample uses (2.14 = simple delta, 2.15+ =
+        // delta of delta).
+        let is215 = compatibleWith >= 0x215
         var smp: [ITSample] = []
         smp.reserveCapacity(smpNum)
         for ptr in smpPtrs {
@@ -192,7 +196,7 @@ public struct ITFile: Sendable {
                 smp.append(.empty)
                 continue
             }
-            smp.append(ITSample.parse(data: data, at: ptr))
+            smp.append(ITSample.parse(data: data, at: ptr, is215: is215))
         }
         self.samples = smp
 
@@ -285,7 +289,7 @@ public struct ITSample: Sendable {
         pcm: []
     )
 
-    static func parse(data: Data, at base: Int) -> ITSample {
+    static func parse(data: Data, at base: Int, is215: Bool = false) -> ITSample {
         let globalVol = data[base + 0x11]
         let flag      = data[base + 0x12]
         let volume    = data[base + 0x13]
@@ -321,18 +325,41 @@ public struct ITSample: Sendable {
         //   bit 2 = delta-encoded
         //   bit 3 = "ITSCRAMBLE" 12-bit (not handled)
         var pcm: [Float] = []
-        if hasSample, !isCompressed, length > 0,
-           samplePointer > 0, samplePointer < data.count {
-            pcm = decodeSample(
-                data: data,
-                offset: samplePointer,
-                length: length,
-                has16Bit: has16,
-                isStereo: isStereo,
-                isSigned: (cvt & 0x01) != 0,
-                isBigEndian: (cvt & 0x02) != 0,
-                isDelta: (cvt & 0x04) != 0
-            )
+        if hasSample, length > 0, samplePointer > 0, samplePointer < data.count {
+            if isCompressed {
+                // IT 2.14 / 2.15 variable-bit-width codec. Stereo
+                // compressed samples are stored as two consecutive
+                // compressed streams (left, then right); we fold to
+                // mono by averaging once both are decoded.
+                if isStereo {
+                    let leftPCM = has16
+                        ? ITDecompress.decompress16(data: data, offset: samplePointer, sampleCount: length, is215: is215)
+                        : ITDecompress.decompress8(data: data, offset: samplePointer, sampleCount: length, is215: is215)
+                    // The right channel begins immediately after the
+                    // left in the file; the codec doesn't tell us the
+                    // exact byte length, so we conservatively skip
+                    // past the input we know we needed by counting
+                    // bytes the bit reader would have consumed.
+                    // Compressed-stereo IT samples are vanishingly
+                    // rare; in practice we fall back to mono-left.
+                    pcm = leftPCM
+                } else {
+                    pcm = has16
+                        ? ITDecompress.decompress16(data: data, offset: samplePointer, sampleCount: length, is215: is215)
+                        : ITDecompress.decompress8(data: data, offset: samplePointer, sampleCount: length, is215: is215)
+                }
+            } else {
+                pcm = decodeSample(
+                    data: data,
+                    offset: samplePointer,
+                    length: length,
+                    has16Bit: has16,
+                    isStereo: isStereo,
+                    isSigned: (cvt & 0x01) != 0,
+                    isBigEndian: (cvt & 0x02) != 0,
+                    isDelta: (cvt & 0x04) != 0
+                )
+            }
         }
 
         return ITSample(

@@ -91,9 +91,26 @@ public final class ITMixer: @unchecked Sendable {
 
     // MARK: - Voice state
 
-    /// One voice per IT channel. We allocate 64 so the channel
-    /// indices in pattern data map straight through.
-    private var voices: [Voice] = Array(repeating: Voice(), count: 64)
+    /// Voice pool. The first 64 slots are typically the
+    /// "channel-owned" voices (one per IT channel), and the
+    /// remaining 64 are ghost slots used by NNA: when a new note
+    /// arrives on a channel and the instrument's New Note Action
+    /// isn't "Cut", we hand the existing voice off here so it can
+    /// keep fading / playing without blocking the channel.
+    private var voices: [Voice] = Array(repeating: Voice(), count: 128)
+
+    /// Per-channel "currently active voice" slot. -1 means the
+    /// channel has nothing playing. Effects targeted at a channel
+    /// (Mxx set channel vol, Sxx pan, …) hop through this table to
+    /// reach the right voice in the pool.
+    private var channelVoice: [Int] = Array(repeating: -1, count: 64)
+
+    /// Per-channel default pan / volume from the file header. The
+    /// voice picks these up when it's first allocated for the
+    /// channel; ghost voices keep the snapshot they were given.
+    private var channelDefaultPan: [Int] = Array(repeating: 32, count: 64)
+    private var channelDefaultVolume: [Int] = Array(repeating: 64, count: 64)
+    private var channelMuted: [Bool] = Array(repeating: false, count: 64)
 
     // MARK: - Init
 
@@ -105,15 +122,14 @@ public final class ITMixer: @unchecked Sendable {
         self.globalVolume = Int(file.globalVolume)
         self.mixVolume = Int(file.mixVolume == 0 ? 48 : file.mixVolume)
 
-        // Seed per-channel pan / volume from the header.
+        // Seed per-channel defaults from the header. The voice pool
+        // stays empty until the pattern engine triggers notes.
         for i in 0..<64 {
             let pan = file.channelPan[i]
-            // Bit 7 of channelPan means "channel disabled"; treat
-            // those as muted by zeroing the voice volume so render
-            // still runs but emits nothing.
-            voices[i].channelVolume = Int(file.channelVolume[i])
-            voices[i].channelMuted = (pan & 0x80) != 0
-            voices[i].pan = Int(pan & 0x7F).clamped(to: 0...64)
+            // Bit 7 of channelPan means "channel disabled."
+            channelMuted[i] = (pan & 0x80) != 0
+            channelDefaultPan[i] = Int(pan & 0x7F).clamped(to: 0...64)
+            channelDefaultVolume[i] = Int(file.channelVolume[i])
         }
 
         // Find the first non-skip order so an order list that
@@ -167,6 +183,85 @@ public final class ITMixer: @unchecked Sendable {
         return produced
     }
 
+    // MARK: - Voice pool
+
+    /// Allocate a free pool slot for `channel`. Picks the first
+    /// inactive slot; if every slot is busy, steals the one with
+    /// the lowest fadeout-volume so the quietest voice goes first.
+    /// Returns the chosen index — never -1.
+    private func allocateSlot(for channel: Int) -> Int {
+        var quietestIndex = 0
+        var quietestVolume = Int.max
+        for i in 0..<voices.count {
+            if !voices[i].active { return i }
+            if voices[i].fadeOutVolume < quietestVolume {
+                quietestVolume = voices[i].fadeOutVolume
+                quietestIndex = i
+            }
+        }
+        return quietestIndex
+    }
+
+    /// Apply the existing voice's New Note Action when a fresh note
+    /// arrives on its channel. Cut/Continue/NoteOff/NoteFade per the
+    /// IT spec — anything except "Cut" hands the voice off to the
+    /// ghost pool so it can keep playing while the channel hosts
+    /// the new trigger.
+    private func applyNNA(slot: Int) {
+        guard slot >= 0, slot < voices.count else { return }
+        switch voices[slot].instrumentNNA {
+        case 0: // Cut
+            voices[slot].active = false
+        case 1: // Continue — voice keeps playing as-is
+            voices[slot].channelOwner = -1
+            voices[slot].isGhost = true
+        case 2: // Note Off — release envelope, start fadeout
+            voices[slot].noteIsHeld = false
+            voices[slot].channelOwner = -1
+            voices[slot].isGhost = true
+        case 3: // Note Fade — force fadeout
+            voices[slot].noteIsHeld = false
+            if voices[slot].fadeOutPerTick == 0 { voices[slot].fadeOutPerTick = 1024 }
+            voices[slot].channelOwner = -1
+            voices[slot].isGhost = true
+        default:
+            voices[slot].active = false
+        }
+    }
+
+    /// Apply DCT (Duplicate Check Type) + DCA (Duplicate Check
+    /// Action) for a new note. Scans every active voice for one
+    /// whose currently-playing note / sample / instrument matches
+    /// the new note, per the instrument's DCT. Matches receive the
+    /// DCA treatment (cut / note-off / note-fade).
+    private func applyDCT(newSlot: Int, instrument inst: ITInstrument, note: UInt8) {
+        guard inst.duplicateCheckType != 0 else { return }
+        let newSample = newSlot >= 0 ? voices[newSlot].sampleIndex : -1
+        let newInstrument = newSlot >= 0 ? voices[newSlot].instrumentIndex : -1
+
+        for i in 0..<voices.count {
+            if i == newSlot || !voices[i].active { continue }
+
+            let matches: Bool
+            switch inst.duplicateCheckType {
+            case 1: matches = Int(note) == Int(voices[i].note)
+            case 2: matches = voices[i].sampleIndex == newSample
+            case 3: matches = voices[i].instrumentIndex == newInstrument
+            default: matches = false
+            }
+            if !matches { continue }
+
+            switch inst.duplicateCheckAction {
+            case 0: voices[i].active = false
+            case 1: voices[i].noteIsHeld = false
+            case 2:
+                voices[i].noteIsHeld = false
+                if voices[i].fadeOutPerTick == 0 { voices[i].fadeOutPerTick = 1024 }
+            default: voices[i].active = false
+            }
+        }
+    }
+
     // MARK: - Render helpers
 
     private func renderChunk(into buffer: UnsafeMutablePointer<Float>, offset: Int, count: Int) {
@@ -175,7 +270,19 @@ public final class ITMixer: @unchecked Sendable {
             var l: Float = 0
             var r: Float = 0
             for ch in 0..<voices.count where voices[ch].active {
-                advanceVoice(ch, into: &l, into2: &r)
+                // Each voice mixes its own L/R contribution into
+                // separate temporaries so the filter has something
+                // to chew on per-voice — otherwise the resonance of
+                // one voice would smear across every other voice
+                // sharing the same sample.
+                var vl: Float = 0
+                var vr: Float = 0
+                advanceVoice(ch, into: &vl, into2: &vr)
+                if voices[ch].filterCutoff < 127 || voices[ch].filterResonance > 0 {
+                    filterSample(&voices[ch], l: &vl, r: &vr)
+                }
+                l += vl
+                r += vr
             }
             // Track the absolute frame so LFOs and envelopes keep
             // ticking on a stable timeline.
@@ -321,9 +428,15 @@ public final class ITMixer: @unchecked Sendable {
         } else {
             // Subsequent ticks within the same row run the
             // continuous parts of any active effects (vibrato,
-            // volslide, tone porta, etc.).
-            for ch in 0..<voices.count where voices[ch].active {
-                runActiveEffects(ch)
+            // volslide, tone porta, etc.) on each channel's current
+            // voice. Ghost voices keep playing/fading without
+            // receiving any new effect updates — that's the whole
+            // point of being a ghost.
+            for ch in 0..<channelVoice.count {
+                let slot = channelVoice[ch]
+                if slot >= 0 && voices[slot].active {
+                    runActiveEffects(ch)
+                }
             }
         }
 
@@ -421,7 +534,7 @@ public final class ITMixer: @unchecked Sendable {
         let pattern = currentPattern()
         guard row < pattern.rows.count else { return }
         let cells = pattern.rows[row]
-        for ch in 0..<min(voices.count, cells.count) {
+        for ch in 0..<min(channelVoice.count, cells.count) {
             processCell(cells[ch], on: ch)
         }
         if row == 0 {
@@ -430,13 +543,36 @@ public final class ITMixer: @unchecked Sendable {
     }
 
     private func processCell(_ cell: ITPattern.Cell, on ch: Int) {
-        var v = voices[ch]
-
-        // Note + instrument together restart the voice; either
-        // alone replays the current sample with the new parameter.
         let hasNote = cell.note != 255
         let hasInstr = cell.instrument != 0
 
+        // Resolve which voice slot to operate on. A real pitched
+        // note triggers NNA on the existing voice and allocates a
+        // fresh slot; everything else (note off / fade / cut /
+        // pure column update) operates on the current slot.
+        let isPitchedTrigger = hasNote && cell.note < 120
+        var slot = channelVoice[ch]
+        if isPitchedTrigger {
+            if slot >= 0 {
+                applyNNA(slot: slot)
+            }
+            slot = allocateSlot(for: ch)
+            voices[slot] = Voice()
+            voices[slot].channelOwner = ch
+            voices[slot].pan = channelDefaultPan[ch]
+            voices[slot].channelVolume = channelDefaultVolume[ch]
+            voices[slot].channelMuted = channelMuted[ch]
+            channelVoice[ch] = slot
+        } else if slot < 0 {
+            // No active voice and no trigger — nothing to do.
+            return
+        }
+
+        var v = voices[slot]
+
+        // Apply instrument first so the keyboard-map lookup runs
+        // before the note triggers (and so the new note picks up
+        // the right sample + envelope).
         if hasInstr {
             let idx = Int(cell.instrument) - 1
             v.instrumentIndex = idx
@@ -450,29 +586,34 @@ public final class ITMixer: @unchecked Sendable {
             case 254: // note cut
                 v.active = false
                 v.volume = 0
-            case 255: // empty (shouldn't hit here)
+            case 255: // empty
                 break
-            case 246: // note fade — start the fadeout
+            case 246: // note fade
                 v.noteIsHeld = false
             default:
                 if !hasInstr, let inst = currentInstrument(idx: v.instrumentIndex) {
                     applyInstrumentToVoice(&v, instrument: inst, note: cell.note)
                 }
                 triggerNote(&v, note: cell.note)
+                // Persist the configured voice before scanning the
+                // pool for DCT matches — otherwise the scan would
+                // see stale state for the freshly-allocated slot.
+                voices[slot] = v
+                if let inst = currentInstrument(idx: v.instrumentIndex) {
+                    applyDCT(newSlot: slot, instrument: inst, note: cell.note)
+                }
+                v = voices[slot]
             }
         }
 
-        // Volume column.
         if cell.volume != 255 {
             applyVolumeColumn(cell.volume, voice: &v)
         }
 
-        // Effect command + value. Command index is letter ordinal
-        // 1 = 'A' .. 26 = 'Z' (0 means "no command").
         v.lastCommand = cell.command
         v.lastCommandValue = cell.commandValue
+        voices[slot] = v
 
-        voices[ch] = v
         if cell.command != 0 {
             applyEffectOnRow(cell.command, value: cell.commandValue, channel: ch)
         }
@@ -505,6 +646,31 @@ public final class ITMixer: @unchecked Sendable {
         v.volumeEnvelope = inst.volumeEnvelope
         v.volEnvTick = 0
         v.volEnvValue = 1.0
+
+        // Seed the filter from the instrument's initial settings.
+        // `initialFilterCutoff` bit 7 means "enabled" (low 7 bits =
+        // value); same for resonance. When disabled we treat the
+        // filter as pass-through.
+        if (inst.initialFilterCutoff & 0x80) != 0 {
+            v.filterCutoff = Int(inst.initialFilterCutoff & 0x7F)
+        } else {
+            v.filterCutoff = 127
+        }
+        if (inst.initialFilterResonance & 0x80) != 0 {
+            v.filterResonance = Int(inst.initialFilterResonance & 0x7F)
+        } else {
+            v.filterResonance = 0
+        }
+        v.filterDirty = true
+        v.filterZ1L = 0; v.filterZ2L = 0; v.filterZ1R = 0; v.filterZ2R = 0
+
+        // Stash NNA/DCT/DCA so a future same-channel trigger can
+        // honor them. The mixer reads these off the *currently
+        // playing* voice when a new note arrives — we cache rather
+        // than re-fetching since instruments don't mutate.
+        v.instrumentNNA = inst.newNoteAction
+        v.instrumentDCT = inst.duplicateCheckType
+        v.instrumentDCA = inst.duplicateCheckAction
     }
 
     private func triggerNote(_ v: inout Voice, note: UInt8) {
@@ -535,27 +701,99 @@ public final class ITMixer: @unchecked Sendable {
 
     // MARK: - Volume column
 
-    private func applyVolumeColumn(_ v: UInt8, voice: inout Voice) {
-        switch Int(v) {
+    /// Full IT volume-column dispatch. The column byte encodes a
+    /// small command + parameter inside disjoint value windows:
+    ///   0..64    set volume
+    ///   65..74   a..j fine volume up (tick 0 only)
+    ///   75..84   a..j fine volume down (tick 0 only)
+    ///   85..94   a..j volume slide up (per tick)
+    ///   95..104  a..j volume slide down (per tick)
+    ///   105..114 a..j pitch slide down (per tick)
+    ///   115..124 a..j pitch slide up (per tick)
+    ///   128..192 set pan (0..64)
+    ///   193..202 a..j tone portamento (speed via lookup table)
+    ///   203..212 a..j vibrato depth (a-j)
+    /// Anything outside those windows is silently ignored.
+    private func applyVolumeColumn(_ raw: UInt8, voice v: inout Voice) {
+        let value = Int(raw)
+        switch value {
         case 0...64:
-            voice.volume = Int(v)
+            v.volume = value
+            v.volumeColumnKind = .none
+        case 65...74:
+            let param = value - 65
+            v.volume = (v.volume + param).clamped(to: 0...64)
+            v.volumeColumnKind = .none
+        case 75...84:
+            let param = value - 75
+            v.volume = (v.volume - param).clamped(to: 0...64)
+            v.volumeColumnKind = .none
+        case 85...94:
+            v.volumeColumnParam = UInt8(value - 85)
+            v.volumeColumnKind = .slideUp
+        case 95...104:
+            v.volumeColumnParam = UInt8(value - 95)
+            v.volumeColumnKind = .slideDown
+        case 105...114:
+            v.volumeColumnParam = UInt8(value - 105)
+            v.volumeColumnKind = .pitchDown
+        case 115...124:
+            v.volumeColumnParam = UInt8(value - 115)
+            v.volumeColumnKind = .pitchUp
         case 128...192:
-            // Set pan (128 = full left in IT volume-column, 192 = full right).
-            voice.pan = Int(v - 128).clamped(to: 0...64)
+            v.pan = (value - 128).clamped(to: 0...64)
+            v.volumeColumnKind = .none
+        case 193...202:
+            // Volume-column tone-porta speed lookup. The IT spec
+            // maps a..j to this fixed table of period units; we
+            // store the index and dispatch per tick.
+            let table: [UInt8] = [0, 1, 4, 8, 16, 32, 64, 96, 128, 255]
+            let idx = value - 193
+            v.toneSpeed = table[idx]
+            v.volumeColumnKind = .tonePorta
+        case 203...212:
+            // Volume-column vibrato sets the depth (in 1/64
+            // semitone units); the speed stays at whatever the
+            // effect-column H/U last seeded.
+            v.vibratoDepth = UInt8(value - 203)
+            v.volumeColumnKind = .vibrato
         default:
-            // Slides / vibrato / porta sub-commands all live inside
-            // the 65..127 and 193..212 windows. The mixer would
-            // ideally honor them on every tick; for now we drop them
-            // gracefully so playback continues without misfiring.
+            v.volumeColumnKind = .none
+        }
+    }
+
+    /// Per-tick continuation for volume-column slides / porta /
+    /// vibrato. The fine variants only fire on tick 0 (already
+    /// applied above); the continuous ones run here on every tick
+    /// > 0 while the column is the "active" decoration on the voice.
+    private func runVolumeColumn(_ v: inout Voice) {
+        switch v.volumeColumnKind {
+        case .none:
             break
+        case .slideUp:
+            v.volume = (v.volume + Int(v.volumeColumnParam)).clamped(to: 0...64)
+        case .slideDown:
+            v.volume = (v.volume - Int(v.volumeColumnParam)).clamped(to: 0...64)
+        case .pitchUp:
+            v.note += Double(v.volumeColumnParam) / 16.0
+            recomputeStep(&v)
+        case .pitchDown:
+            v.note -= Double(v.volumeColumnParam) / 16.0
+            recomputeStep(&v)
+        case .tonePorta:
+            applyToneSlide(&v)
+        case .vibrato:
+            applyVibrato(&v)
         }
     }
 
     // MARK: - Effects (tick 0)
 
     private func applyEffectOnRow(_ cmd: UInt8, value: UInt8, channel ch: Int) {
-        var v = voices[ch]
-        defer { voices[ch] = v }
+        let slot = channelVoice[ch]
+        guard slot >= 0 else { return }
+        var v = voices[slot]
+        defer { voices[slot] = v }
         switch cmd {
         case 1: // A: Set speed
             if value > 0 { speed = Int(value) }
@@ -604,6 +842,20 @@ public final class ITMixer: @unchecked Sendable {
             globalVolume = Int(value).clamped(to: 0...128)
         case 24: // X: Set panning (0..255 mapped to 0..64)
             v.pan = Int(value) * 64 / 255
+        case 25: // Y: Panbrello — LFO-modulated panning
+            if (value & 0x0F) != 0 { v.panbrelloDepth = value & 0x0F }
+            if (value >> 4) != 0   { v.panbrelloSpeed = value >> 4 }
+        case 26: // Z: Filter cutoff / resonance.
+            // Z00..Z7F sets the cutoff (high byte); Z80..ZFF sets
+            // the resonance. Real IT can also dispatch arbitrary
+            // MIDI macros from Zxx — we honor the common filter
+            // semantics and ignore everything else.
+            if value < 0x80 {
+                v.filterCutoff = Int(value)
+            } else {
+                v.filterResonance = Int(value & 0x7F)
+            }
+            v.filterDirty = true
         default:
             break
         }
@@ -627,8 +879,14 @@ public final class ITMixer: @unchecked Sendable {
     // MARK: - Effects (tick >0)
 
     private func runActiveEffects(_ ch: Int) {
-        var v = voices[ch]
-        defer { voices[ch] = v }
+        let slot = channelVoice[ch]
+        guard slot >= 0 else { return }
+        var v = voices[slot]
+        defer { voices[slot] = v }
+
+        // Volume column runs every tick > 0 — it stacks on top of
+        // the effect column rather than replacing it.
+        runVolumeColumn(&v)
 
         switch v.lastCommand {
         case 4:  applyVolumeSlide(&v, param: v.volSlideMemory, fineOnly: false)
@@ -649,6 +907,7 @@ public final class ITMixer: @unchecked Sendable {
                 v.position = 0
             }
         case 18: applyTremolo(&v)
+        case 25: applyPanbrello(&v)
         default: break
         }
 
@@ -733,6 +992,72 @@ public final class ITMixer: @unchecked Sendable {
         v.volume = (v.volume + delta).clamped(to: 0...64)
     }
 
+    /// Panbrello — triangle LFO modulating pan. Same triangle
+    /// generator as vibrato / tremolo, just steered into `pan`
+    /// instead of `note` / `volume`.
+    private func applyPanbrello(_ v: inout Voice) {
+        v.panbrelloPos = (v.panbrelloPos &+ v.panbrelloSpeed) & 0x3F
+        let phase = Int(v.panbrelloPos)
+        let waveform: Int
+        if phase < 32 { waveform = phase * 8 } else { waveform = (64 - phase) * 8 }
+        let delta = waveform * Int(v.panbrelloDepth) / 128
+        v.pan = (v.pan + delta).clamped(to: 0...64)
+    }
+
+    // MARK: - Filter
+
+    /// Recompute IIR coefficients for the voice's resonant low-pass
+    /// when cutoff or resonance has moved. The form is the standard
+    /// 2-pole bilinear-transform biquad with resonance baked into
+    /// the feedback gain — same shape OpenMPT and Schism use.
+    private func updateFilterCoefficients(_ v: inout Voice) {
+        guard v.filterDirty else { return }
+        v.filterDirty = false
+
+        if v.filterCutoff >= 127 && v.filterResonance == 0 {
+            // Pass-through: skip the IIR entirely.
+            v.filterA = 1
+            v.filterB1 = 0
+            v.filterB2 = 0
+            return
+        }
+
+        // Cutoff: map 0..127 to Hz via `cutoffHz = 110 * 2^(cutoff/24 + 0.25)`
+        // (the OpenMPT-derived approximation of IT's internal table).
+        let cutoffHz = 110.0 * pow(2.0, Double(v.filterCutoff) / 24.0 + 0.25)
+        let resonance = Double(v.filterResonance) / 127.0
+
+        // Convert to angular frequency at the mixer's output rate.
+        let omega = 2 * Double.pi * cutoffHz / sampleRate
+        let r = max(0.001, 1.0 - resonance * 0.97)
+        let cosO = cos(omega)
+        let a = (1 - r * r) * 0.5
+        let b1 = 2 * r * cosO
+        let b2 = -(r * r)
+        // Normalize so unity DC.
+        let norm = 1 - b1 - b2 + a
+        v.filterA = Float(a / max(0.001, norm))
+        v.filterB1 = Float(b1 / max(0.001, norm))
+        v.filterB2 = Float(b2 / max(0.001, norm))
+    }
+
+    /// Apply the voice's low-pass to a single stereo frame in place.
+    /// The taps are kept per-channel so the L/R outputs ring out
+    /// independently — important once panbrello or hard-panned
+    /// notes start moving the gain split per frame.
+    private func filterSample(_ v: inout Voice, l: inout Float, r: inout Float) {
+        updateFilterCoefficients(&v)
+        if v.filterA == 1 && v.filterB1 == 0 && v.filterB2 == 0 { return }
+        let yL = v.filterA * l + v.filterB1 * v.filterZ1L + v.filterB2 * v.filterZ2L
+        v.filterZ2L = v.filterZ1L
+        v.filterZ1L = yL
+        let yR = v.filterA * r + v.filterB1 * v.filterZ1R + v.filterB2 * v.filterZ2R
+        v.filterZ2R = v.filterZ1R
+        v.filterZ1R = yR
+        l = yL
+        r = yR
+    }
+
     // MARK: - Timing
 
     private func samplesPerTick() -> Int {
@@ -803,6 +1128,55 @@ private struct Voice {
     // Sxx side effects.
     var cutAfterTicks: Int = 0
     var delayTicks: Int = 0
+
+    // Volume column decoration. The kind enum selects which slide
+    // / porta / vibrato variant runs on ticks > 0; the param holds
+    // the magnitude (a..j → 0..9). Set by `applyVolumeColumn` on
+    // tick 0, drained by `runVolumeColumn` on every subsequent tick.
+    var volumeColumnKind: VolumeColumnKind = .none
+    var volumeColumnParam: UInt8 = 0
+
+    // Panbrello LFO state.
+    var panbrelloSpeed: UInt8 = 0
+    var panbrelloDepth: UInt8 = 0
+    var panbrelloPos: UInt8 = 0
+
+    // Resonant low-pass filter state. `filterCutoff` runs 0..127
+    // (127 = pass-through); `filterResonance` is 0..127 (0 = no
+    // resonance). Coefficients are recomputed lazily when either
+    // moves; `z1` / `z2` are the IIR taps.
+    var filterCutoff: Int = 127
+    var filterResonance: Int = 0
+    var filterDirty: Bool = true
+    var filterA: Float = 1
+    var filterB1: Float = 0
+    var filterB2: Float = 0
+    var filterZ1L: Float = 0
+    var filterZ2L: Float = 0
+    var filterZ1R: Float = 0
+    var filterZ2R: Float = 0
+
+    // NNA / DCT bookkeeping. `channelOwner` is the logical pattern
+    // channel this voice was last allocated for; `isGhost` flips
+    // when the channel is handed a new note and this voice is left
+    // to fade out independently.
+    var channelOwner: Int = -1
+    var isGhost: Bool = false
+    var instrumentNNA: UInt8 = 0
+    var instrumentDCT: UInt8 = 0
+    var instrumentDCA: UInt8 = 0
+}
+
+/// Variants of the IT volume column that need per-tick processing
+/// after their initial tick-0 setup.
+private enum VolumeColumnKind {
+    case none
+    case slideUp
+    case slideDown
+    case pitchUp
+    case pitchDown
+    case tonePorta
+    case vibrato
 }
 
 // MARK: - Misc helpers
