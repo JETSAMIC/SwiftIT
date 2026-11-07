@@ -522,3 +522,25 @@ struct ITMixerTests {
         #expect(empty.withUnsafeMutableBufferPointer { m.render(into: $0) } == 0)
     }
 }
+
+@Suite("ITMixer filter")
+struct ITMixerFilterTests {
+    @Test("Maximum resonance with a filter envelope near Nyquist stays finite")
+    func filterStability() throws {
+        var ins = InstrumentSpec()
+        ins.ifc = 0x80 | 127
+        ins.ifr = 0x80 | 127
+        ins.pitchEnvelope = EnvelopeSpec(flags: 0x81, nodes: [(32, 0), (32, 10)])
+        var s = ITMixerTests.loopSample
+        s.data = (0..<1000).map { $0 % 2 == 0 ? 0x7F : 0x80 }   // full-scale Nyquist square
+        let p = ITBuilder.pattern(rows: 4, [ITMixerTests.note(0, 119)])
+        let f = try ITMixerTests.file(flags: 0x0D, patterns: [p], instruments: [ins], samples: [s])
+        for rate in [4_000.0, 44_100, 192_000] {
+            let m = ITMixer(file: f, sampleRate: rate)
+            let (_, buf) = ITMixerTests.render(m, frames: 20_000)
+            #expect(buf.allSatisfy { $0.isFinite })
+            let v = m.voices.first { $0.filterEnabled }
+            #expect(v.map { $0.y1L.isFinite && abs($0.y1L) < 1e6 } ?? true)
+        }
+    }
+}

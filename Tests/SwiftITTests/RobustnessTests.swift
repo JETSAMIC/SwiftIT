@@ -68,11 +68,12 @@ struct RobustnessTests {
         return b.build()
     }()
 
-    /// Parse; when it succeeds, also play a little of it.
+    /// Parse; when it succeeds, also play it. At 4 kHz a tick is about
+    /// 80 frames, so a few thousand frames cover dozens of ticks.
     static func exercise(_ bytes: [UInt8], frames: Int = 512) {
         do {
             let file = try ITFile(bytes: bytes)
-            let mixer = ITMixer(file: file, sampleRate: 22_050)
+            let mixer = ITMixer(file: file, sampleRate: 4_000)
             var buffer = [Float](repeating: 0, count: frames * 2)
             _ = buffer.withUnsafeMutableBufferPointer { mixer.render(into: $0) }
             #expect(buffer.allSatisfy { $0.isFinite && abs($0) <= 1 })
@@ -102,7 +103,7 @@ struct RobustnessTests {
     func truncationAtEveryOffset() {
         let full = Self.fixture
         for n in 0..<full.count {
-            Self.exercise(Array(full.prefix(n)), frames: 64)
+            Self.exercise(Array(full.prefix(n)), frames: 1024)
         }
     }
 
@@ -123,7 +124,7 @@ struct RobustnessTests {
                     if bytes.count > 1 { bytes.remove(at: i) }
                 }
             }
-            Self.exercise(bytes, frames: 256)
+            Self.exercise(bytes, frames: 1600)
         }
     }
 
@@ -139,7 +140,7 @@ struct RobustnessTests {
             bytes[0x22] = UInt8(rng.next() % 4); bytes[0x23] = 0
             bytes[0x24] = UInt8(rng.next() % 4); bytes[0x25] = 0
             bytes[0x26] = UInt8(rng.next() % 4); bytes[0x27] = 0
-            Self.exercise(bytes, frames: 128)
+            Self.exercise(bytes, frames: 2048)
         }
     }
 }

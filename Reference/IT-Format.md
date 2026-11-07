@@ -473,13 +473,15 @@ Tone portamento never triggers NNA. In sample mode, a new note always cuts the o
 **Filter** (from Jeffrey Lim's description, as used by Schism Tracker and OpenMPT):
 
 ```
-fc   = 110 × 2^(0.25 + cutoff × (envmod + 256) / (24 × 512))   [Hz, clamped 120...20000]
+fc   = 110 × 2^(0.25 + cutoff × (envmod + 256) / (24 × 512))   [Hz, clamped 120...min(20000, mixrate/4)]
 damp = 10^(−(24/128) × resonance / 20)
 r    = mixrate / (2π fc);  d = damp·r + damp − 1;  e = r²
 y[n] = x[n]/(1+d+e) + y[n−1]·(d+2e)/(1+d+e) − y[n−2]·e/(1+d+e)
 ```
 
-`envmod` is 256 without a filter envelope, and `(value + 32) × 8` with one. The filter is active when cutoff < 127, when resonance > 0, or when a filter envelope is running.
+`envmod` is 256 without a filter envelope, and `(value + 32) × 8` with one.
+
+The recursion is stable only while r > 1/2 (fc < mixrate / π). With strong resonance near Nyquist it diverges, so SwiftIT clamps fc to mixrate / 4. Impulse Tracker's own ~5 kHz maximum at 44.1 kHz stays far inside that limit. The filter is active when cutoff < 127, when resonance > 0, or when a filter envelope is running.
 
 **End of song.** Impulse Tracker itself loops forever. SwiftIT ends the song when either of these happens:
 - the order list runs out (255 or the last entry)

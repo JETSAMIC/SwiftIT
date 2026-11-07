@@ -181,7 +181,10 @@ extension ITMixer {
     func setFilter(_ v: inout Voice, cutoff: Int, resonance: Int, envelopeModifier: Int) {
         let scaled = Double(cutoff * (envelopeModifier + 256)) / (24 * 512)
         var fc = 110 * pow(2.0, 0.25 + scaled)
-        fc = min(max(fc, 120), min(20_000, sampleRate * 0.5))
+        // The two-pole form is only stable while r > 1/2 (fc < rate/pi);
+        // with strong resonance near Nyquist it diverges. Clamp to rate/4
+        // so a filter envelope or a low output rate can't blow up.
+        fc = min(max(fc, 120), min(20_000, sampleRate / 4))
         let damp = pow(10.0, -(24.0 / 128.0) * Double(resonance) / 20)
         let r = sampleRate / (2 * Double.pi * fc)
         let d = damp * r + damp - 1
@@ -205,8 +208,8 @@ extension ITMixer {
                     renderVoice(i, left: l, right: r, frames: frames)
                 }
                 for f in 0..<frames {
-                    out[f * 2] = min(max(l[f], -1), 1)
-                    out[f * 2 + 1] = min(max(r[f], -1), 1)
+                    out[f * 2] = l[f].isFinite ? min(max(l[f], -1), 1) : 0
+                    out[f * 2 + 1] = r[f].isFinite ? min(max(r[f], -1), 1) : 0
                 }
             }
         }
@@ -255,6 +258,9 @@ extension ITMixer {
                         sr = (c + (d - c) * frac) * scale
                     }
                     if filter {
+                        if !(v.y1L.isFinite && v.y2L.isFinite && v.y1R.isFinite && v.y2R.isFinite) {
+                            v.y1L = 0; v.y2L = 0; v.y1R = 0; v.y2R = 0
+                        }
                         let yl = sl * v.fA + v.y1L * v.fB + v.y2L * v.fC
                         v.y2L = v.y1L
                         v.y1L = yl
