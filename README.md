@@ -1,170 +1,142 @@
 # SwiftIT
 
-Pure-Swift parser and PCM mixer for Impulse Tracker (`.IT`) modules. Zero external dependencies; Foundation only. Builds for iOS 17+, macOS 14+, tvOS 17+, watchOS 10+, and visionOS 1+.
+Pure-Swift parser and software mixer for Impulse Tracker (`.it`) modules, with no dependencies beyond Foundation.
 
-SwiftIT is the third in a small family of tracker decoders maintained under [prestige-exe](https://github.com/prestige-exe), alongside [SwiftS3M](https://github.com/prestige-exe/SwiftS3M) (Scream Tracker 3) and [SwiftXM](https://github.com/prestige-exe/SwiftXM) (FastTracker II). The public shape is intentionally the same across all three so a host app can dispatch by file format without rewriting the audio bridge.
+## Requirements
 
-## A brief history
-
-Impulse Tracker was written by Jeffrey Lim and released in 1995. It picked up where Scream Tracker 3 left off, adding more channels, more effects, smarter sample handling, real instrument abstraction with note-to-sample maps, and three independent envelopes (volume, panning, pitch) per voice. By 1997 it had become the de facto tracker for serious composers in the demoscene and the warez scene. The 2.14 release added sample compression and a per-voice filter, both of which kept the format competitive into the era of streaming MP3.
-
-Lim shipped a full assembly source for the player along with the format spec, which is part of why the IT format has the best long-tail tooling support of any of the trackers. OpenMPT, Schism Tracker, libxmp, and Modplug all read IT faithfully.
-
-## Format reference
-
-The canonical spec is **ITTECH.TXT**, written by Jeffrey Lim and distributed with the IT 2.14 release. It's mirrored in multiple places; the cleanest current copies are:
-
-- The [Schism Tracker source tree](https://github.com/schismtracker/schismtracker)
-- The [OpenMPT source tree](https://github.com/OpenMPT/openmpt) (`soundlib/load_it.cpp` is the most readable reference implementation)
-
-I've intentionally not bundled a copy of the spec text in this repo. The licensing on the document is informal at best, and the references above stay more current than anything I'd vendor.
-
-## What ships
-
-### Parser (`ITFile`)
-
-- 192-byte IMPM header (orders, instruments, samples, patterns, flags, per-channel pan/volume)
-- Order list + instrument / sample / pattern parapointer tables
-- Sample headers (`IMPS`) and sample data
-  - **Uncompressed** 8/16-bit, signed/unsigned, big/little endian, delta-encoded
-  - **IT 2.14 / 2.15 compressed** samples (the full variable-bit-width codec for 8-bit and 16-bit, simple-delta and delta-of-delta variants)
-  - Mono and stereo (stereo folds to mono on load)
-  - Forward and ping-pong loops, sustain loops, sustain ping-pong
-- New-format instruments (`IMPI`, IT 2.00+)
-  - 120-entry note→sample keyboard table
-  - Three 82-byte envelopes (volume / panning / pitch) with loop and sustain-loop semantics
-  - NNA / DCT / DCA honored by the mixer (see below)
-  - Initial filter cutoff / resonance (IFC / IFR) seeded onto the voice on note trigger
-- Old-format instruments (IT 1.x, 554 bytes) coerced into the new-format struct
-- Bit-flag-compressed pattern stream with per-channel mask / note / instrument / volume / command memory
-
-### Mixer (`ITMixer`)
-
-- 128-slot voice pool (64 channel-owned + 64 ghost slots for NNA)
-- Linear interpolation, sub-sample precision via Float position
-- **Full effect set** (A..Z):
-  - `Axx` set speed, `Bxx` position jump, `Cxx` pattern break
-  - `Dxx` volume slide, `Exx` portamento down, `Fxx` portamento up
-  - `Gxx` tone portamento, `Hxx` vibrato, `Jxx` arpeggio
-  - `Kxx` vibrato + volslide, `Lxx` tone porta + volslide
-  - `Mxx` set channel volume, `Oxx` sample offset
-  - `Qxx` retrigger, `Rxx` tremolo
-  - `Sxx` special group (S8x set pan, SCx note cut, SDx note delay)
-  - `Txx` set tempo, `Uxx` fine vibrato
-  - `Vxx` set global volume, `Xxx` set panning
-  - `Yxx` panbrello (triangle LFO modulating pan)
-  - `Zxx` filter cutoff / resonance
-- **Full volume column**:
-  - 0..64 set volume
-  - 65..74 / 75..84 fine volume up / down (tick 0)
-  - 85..94 / 95..104 volume slide up / down (per tick)
-  - 105..114 / 115..124 pitch slide down / up (per tick)
-  - 128..192 set pan
-  - 193..202 tone portamento (a..j → fixed speed table)
-  - 203..212 vibrato depth (a..j)
-- **NNA / DCT / DCA**: the existing voice on a channel is moved into the ghost pool and handled per its instrument's NNA (Cut / Continue / Note Off / Note Fade) when a new note arrives. New triggers run a DCT scan across all active voices (Off / Note / Sample / Instrument) and apply the configured DCA (Cut / Note Off / Note Fade) to matches.
-- **Resonant low-pass filter**: 2-pole biquad per voice, driven by the instrument's IFC/IFR and by `Zxx` at runtime. Pass-through when neither is in use, so silent songs don't pay for it.
-- Volume envelope evaluation with loop + sustain-loop
-- Per-instrument note-off fadeout
-- End-of-song detection: Bxx back to a previously-played order trips `finished` instead of looping forever
-
-## Status
-
-v1 is feature-complete against ITTECH.TXT for the playback path. The README does not describe a roadmap because there isn't one. If you find a real-world IT file that misbehaves, that's a bug; please open an issue with the module attached.
-
-Known shape-of-mixing tradeoffs (all intentional, not deferred work):
-
-- Stereo samples fold to mono on load. Real IT mixers either double-voice or pan-split per channel; we don't, because almost every IT instrument in the wild is mono and folding keeps the voice budget honest.
-- The resonant filter uses a single bilinear-transform biquad rather than IT's exact internal table. Output is close to OpenMPT's at typical cutoffs and noticeably softer at the extremes.
-- Compressed-stereo samples (rare to nonexistent in practice) decode left channel only.
-
-PRs welcome on the above; see `CONTRIBUTING.md` for the bar.
+- iOS 17+, iPadOS 17+, macOS 14+, tvOS 17+, watchOS 10+, visionOS 1+ (verified against the 27.3 SDKs)
+- Swift 6.0+ / Xcode 16+
 
 ## Installation
 
 ```swift
-// In Package.swift
+// Package.swift
 dependencies: [
-    .package(url: "https://github.com/prestige-exe/SwiftIT.git", from: "0.1.0")
+    .package(url: "https://github.com/JETSAMIC/SwiftIT.git", from: "0.1.0")
+],
+targets: [
+    .target(name: "MyApp", dependencies: ["SwiftIT"])
 ]
 ```
 
-## Usage
+## Quick start
 
 ```swift
-import SwiftIT
 import Foundation
+import SwiftIT
 
-let data = try Data(contentsOf: someITFileURL)
-let file = try ITFile(data: data)
+let module = try ITFile(data: Data(contentsOf: url))
+print("\(module.songName): \(module.orders.count) orders, \(module.instruments.count) instruments")
+print("Linear slides:", module.usesLinearSlides)
 
-print("\(file.songName): \(file.orderCount) orders, \(file.instrumentCount) instruments")
-print("Linear slides:", file.usesLinearSlides)
-
-let mixer = ITMixer(file: file, sampleRate: 48_000)
-let frames = 1024
-let buffer = UnsafeMutablePointer<Float>.allocate(capacity: frames * 2)
-defer {
-    buffer.deinitialize(count: frames * 2)
-    buffer.deallocate()
+let mixer = ITMixer(file: module, sampleRate: 48_000)
+var buffer = [Float](repeating: 0, count: 2 * 1024)        // interleaved L R L R ...
+while !mixer.isFinished {
+    let frames = buffer.withUnsafeMutableBufferPointer { mixer.render(into: $0) }
+    // `frames` stereo frames of song audio are in `buffer`; the rest is silence.
+    _ = frames
 }
-_ = mixer.render(into: buffer, frames: frames)
-// `buffer` now holds `frames` interleaved Float32 stereo samples.
 ```
+
+`ITFile(data:)` throws an `ITError` for malformed input. By default the mixer finishes when the order list ends, or when playback would loop back to a row it has already played. Pass `ITMixer.Options(loopsSong: true)` to play forever, as Impulse Tracker does.
+
+The full API is documented in the DocC catalog (`Sources/SwiftIT/SwiftIT.docc`). The byte-level format is documented in [`Reference/IT-Format.md`](Reference/IT-Format.md).
+
+## Spec coverage
+
+| Feature | Status |
+|---|---|
+| `IMPM` header, flags, special flags, row highlights | Supported |
+| Order list (254 skip, 255 end, missing patterns = 64 empty rows) | Supported |
+| Song message (CP437, CR line breaks) | Supported |
+| Edit history | Skipped (located, not surfaced) |
+| Embedded MIDI macro configuration | Parsed; only the internal filter macros (`F0F000xx` / `F0F001xx`) are interpreted |
+| New-format instruments (`Cmwt >= 0x200`) | Supported |
+| Old-format IT 1.x instruments (`Cmwt < 0x200`) | Supported (converted to the new shape) |
+| Volume / panning / pitch envelopes, loop, sustain loop | Supported |
+| Filter envelope (pitch envelope bit 7) | Supported (OpenMPT modifier range) |
+| Envelope carry (bit 3, Schism/OpenMPT extension) | Supported |
+| Sample headers, loops, sustain loops, ping-pong | Supported |
+| 8/16-bit, signed/unsigned, big-endian, delta PCM | Supported |
+| Stereo samples (split L/R) | Supported (played in stereo) |
+| IT 2.14 / 2.15 compressed samples, 8 and 16 bit, mono and stereo | Supported |
+| ModPlug ADPCM, PTM byte-delta samples | Supported |
+| 12-bit TX-Wave samples (`Cvt` bit 4) | Unsupported (decoded as plain PCM, as in OpenMPT) |
+| Pattern packing with mask / value memory | Supported |
+| Instrument mode, keyboard table, sample mode | Supported |
+| NNA (cut / continue / off / fade), DCT / DCA, S70-S76 | Supported (256 voices) |
+| Linear and Amiga slides | Supported |
+| Effects A-Z incl. S-commands, effect memory sharing | Supported, with the exceptions below |
+| S1x glissando, S2x finetune, S0x | Ignored (as in IT) |
+| SEx pattern delay | Partial: repeated rows don't re-run first-tick effects |
+| Zxx / SFx MIDI macros | Partial: filter cutoff/resonance only, no MIDI output |
+| Volume column (all commands, separate memory) | Supported |
+| Resonant filter (IFC / IFR / Zxx) | Supported (IT formula) |
+| Auto-vibrato, pitch-pan separation, random volume/pan | Supported (approximate depth scaling) |
+| Old effects (flag bit 4), compatible Gxx (flag bit 5) | Supported, except the Gxx sample-change frequency rescale |
+| MIDI pitch controller (flag bit 6), MIDI output | Unsupported |
+| OpenMPT extension chunks (`XTPM`, `STPM`, plugins) | Unsupported (ignored) |
+
+## Robustness
+
+`ITFile` is built to read untrusted input:
+
+- **Errors, not crashes.** Every read is bounds-checked. Structural damage throws a typed `ITError`: truncated tables, parapointers past the end of the file, missing `IMPI`/`IMPS` signatures, and invalid patterns. Sample data that ends early is decoded partially and flagged with `ITSample.isTruncated`.
+- **Bounded memory.** Decoded sample frames are capped relative to file size, and pattern cells at 8 Mi. Shared parapointers are decoded once. The decompressor never trusts the declared length when allocating.
+- **Bounded playback.** No song renders forever unless you ask for it (`loopsSong`).
+- **Tested.** The test suite parses every truncation of a feature-rich fixture, plus a few thousand seeded random mutations.
+
+## Limitations
+
+- The mixer uses linear interpolation without volume ramping, so abrupt volume changes can click.
+- Tremolo, panbrello, auto-vibrato depth scaling, and the filter-envelope range follow OpenMPT's documented behaviour. They aren't bit-exact to Impulse Tracker.
+- Vibrato in Amiga-slide mode is applied as a linear pitch offset.
+- Output is clamped to ±1. The mix level is `MV / 128` per full-volume voice.
+- `ITMixer` isn't internally synchronized. Hand it to one thread (for example, the audio render thread) and use it only from there.
 
 ## AVAudioEngine bridge
 
-A minimal `AVAudioSourceNode` adapter; the same shape that ships in the Relical app for SwiftS3M and SwiftXM. Drop into a class that owns an `AVAudioEngine` instance:
+`AVAudioSourceNode` wants non-interleaved buffers, so this bridge renders into a pre-allocated interleaved scratch buffer and then de-interleaves it:
 
 ```swift
 import AVFoundation
 import SwiftIT
 
-func attachMixer(_ mixer: ITMixer, to engine: AVAudioEngine) throws {
-    let sampleRate = mixer.sampleRate
-    guard let format = AVAudioFormat(
-        commonFormat: .pcmFormatFloat32,
-        sampleRate: sampleRate,
-        channels: 2,
-        interleaved: false
-    ) else { return }
+func attach(_ mixer: ITMixer, to engine: AVAudioEngine) throws {
+    guard let format = AVAudioFormat(standardFormatWithSampleRate: mixer.sampleRate, channels: 2) else { return }
+    let capacity = 8192
+    let scratch = UnsafeMutablePointer<Float>.allocate(capacity: capacity * 2)
+    scratch.initialize(repeating: 0, count: capacity * 2)
 
-    // Scratch buffer the audio thread renders into. Pre-allocated
-    // so the render block never touches the allocator.
-    let scratchFrames = 8192
-    let scratch = UnsafeMutablePointer<Float>.allocate(capacity: scratchFrames * 2)
-    scratch.initialize(repeating: 0, count: scratchFrames * 2)
-
-    let node = AVAudioSourceNode(format: format) { _, _, frameCount, ablPointer in
-        let n = Int(frameCount)
-        let abl = UnsafeMutableAudioBufferListPointer(ablPointer)
-        guard abl.count >= 2,
-              let lRaw = abl[0].mData,
-              let rRaw = abl[1].mData,
-              n <= scratchFrames else { return noErr }
-
-        _ = mixer.render(into: scratch, frames: n)
-        let l = lRaw.assumingMemoryBound(to: Float.self)
-        let r = rRaw.assumingMemoryBound(to: Float.self)
+    let node = AVAudioSourceNode(format: format) { _, _, frameCount, list in
+        let n = min(Int(frameCount), capacity)
+        let buffers = UnsafeMutableAudioBufferListPointer(list)
+        guard buffers.count >= 2,
+              let l = buffers[0].mData?.assumingMemoryBound(to: Float.self),
+              let r = buffers[1].mData?.assumingMemoryBound(to: Float.self) else { return noErr }
+        mixer.render(into: scratch, frames: n)
         for i in 0..<n {
             l[i] = scratch[i * 2]
             r[i] = scratch[i * 2 + 1]
         }
         return noErr
     }
-
     engine.attach(node)
     engine.connect(node, to: engine.mainMixerNode, format: format)
     try engine.start()
 }
 ```
 
-`AVAudioSourceNode` requires non-interleaved output, so the bridge deinterleaves into the audio bus's L/R channels each render call. Connecting an interleaved format to the main mixer fails with `kAudioUnitErr_FormatNotSupported` (error `-10868`).
+## Background
 
-## Threading
+Jeffrey Lim released Impulse Tracker in 1995. It added instruments with note-to-sample maps, three envelopes per instrument, New Note Actions with background voices, a resonant filter, and (in 2.14) lossless sample compression. Lim documented the format in ITTECH.TXT, which remains the canonical reference.
 
-`ITMixer` is `@unchecked Sendable`. Once you've handed it to the audio thread, that thread owns it exclusively; don't reach back from the main actor while playback is live. All the public mutating operations should happen during `init`.
+## References
+
+- Jeffrey Lim, *ITTECH.TXT* (Impulse Tracker 2.14 technical documentation)
+- [OpenMPT wiki: Development: Formats/IT](https://wiki.openmpt.org/Development:_Formats/IT)
+- [Schism Tracker](https://github.com/schismtracker/schismtracker) and [OpenMPT](https://github.com/OpenMPT/openmpt), whose playback behaviour SwiftIT follows where ITTECH.TXT is silent
 
 ## License
 
-MIT. See `LICENSE`.
+MIT. See [`LICENSE`](LICENSE).
