@@ -16,5 +16,6 @@ let package = Package(
     targets: [
         .target(name: "SwiftIT"),
         .testTarget(name: "SwiftITTests", dependencies: ["SwiftIT"])
-    ]
+    ],
+    swiftLanguageModes: [.v6]
 )
