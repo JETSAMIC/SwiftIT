@@ -40,7 +40,7 @@ while !mixer.isFinished {
 
 `ITFile(data:)` throws an `ITError` for malformed input. By default the mixer finishes when the order list ends, or when playback would loop back to a row it has already played. Pass `ITMixer.Options(loopsSong: true)` to play forever, as Impulse Tracker does.
 
-The full API is documented in the DocC catalog (`Sources/SwiftIT/SwiftIT.docc`). The byte-level format is documented in [`Reference/IT-Format.md`](Reference/IT-Format.md).
+The full API is documented in the DocC catalog (`Sources/SwiftIT/SwiftIT.docc`). The format and its playback semantics are documented in [`Reference/IT-Format.md`](Reference/IT-Format.md).
 
 ## Spec coverage
 
@@ -48,9 +48,9 @@ The full API is documented in the DocC catalog (`Sources/SwiftIT/SwiftIT.docc`).
 |---|---|
 | `IMPM` header, flags, special flags, row highlights | Supported |
 | Order list (254 skip, 255 end, missing patterns = 64 empty rows) | Supported |
-| Song message (CP437, CR line breaks) | Supported |
-| Edit history | Skipped (located, not surfaced) |
-| Embedded MIDI macro configuration | Parsed; only the internal filter macros (`F0F000xx` / `F0F001xx`) are interpreted |
+| Song message (CP437; CR, LF, or CR LF line breaks) | Supported |
+| Edit history | Skipped (located and validated against the parapointers, not surfaced) |
+| Embedded MIDI macro configuration | Parsed; only the internal filter messages (`F0F000xx` / `F0F001xx`, `FA`/`FC`/`FF` reset) are interpreted |
 | New-format instruments (`Cmwt >= 0x200`) | Supported |
 | Old-format IT 1.x instruments (`Cmwt < 0x200`) | Supported (converted to the new shape) |
 | Volume / panning / pitch envelopes, loop, sustain loop | Supported |
@@ -67,13 +67,15 @@ The full API is documented in the DocC catalog (`Sources/SwiftIT/SwiftIT.docc`).
 | NNA (cut / continue / off / fade), DCT / DCA, S70-S76 | Supported (256 voices) |
 | Linear and Amiga slides | Supported |
 | Effects A-Z incl. S-commands, effect memory sharing | Supported, with the exceptions below |
-| S1x glissando, S2x finetune, S0x | Ignored (as in IT) |
-| SEx pattern delay | Partial: repeated rows don't re-run first-tick effects |
-| Zxx / SFx MIDI macros | Partial: filter cutoff/resonance only, no MIDI output |
+| S1x glissando, S2x finetune, S0x | Ignored |
+| SEx / S6x row delays | Supported (each repetition replays first-tick effects; S6x adds to every repetition) |
+| Zxx / SFx MIDI macros | Partial: filter cutoff/resonance (all messages in a macro), no MIDI output |
 | Volume column (all commands, separate memory) | Supported |
 | Resonant filter (IFC / IFR / Zxx) | Supported (IT formula) |
 | Auto-vibrato, pitch-pan separation, random volume/pan | Supported (approximate depth scaling) |
-| Old effects (flag bit 4), compatible Gxx (flag bit 5) | Supported, except the Gxx sample-change frequency rescale |
+| Old effects (flag bit 4) | Supported, except envelope resets by lone instrument numbers |
+| Compatible Gxx (flag bit 5) | Partial: memory link and envelope retrigger; no sample-change frequency rescale |
+| Smaller IT quirks captured by OpenMPT test cases | Partial; the [reference's implementation-status table](Reference/IT-Format.md#9-implementation-status) lists what isn't modelled |
 | MIDI pitch controller (flag bit 6), MIDI output | Unsupported |
 | OpenMPT extension chunks (`XTPM`, `STPM`, plugins) | Unsupported (ignored) |
 

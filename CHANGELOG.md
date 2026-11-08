@@ -27,7 +27,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   - the IT resonant filter, driven by `IFC` / `IFR` / `Zxx`
   - surround, separation, and mono output
 - `ITMixer.Options.loopsSong`. Without it, playback ends at the end of the order list or on a row revisit, and runaway pattern loops are capped.
-- `Reference/IT-Format.md`, the DocC catalog, `.spi.yml`, and the org CI workflow.
+- `Reference/IT-Format.md` (comprehensive format and playback reference), the DocC catalog, `.spi.yml`, and the org CI workflow.
 - Truncation-at-every-offset and seeded mutation fuzz tests.
 
 ### Fixed (relative to the pre-release code on `main`)
@@ -43,6 +43,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Tone portamento never had a target.
 - Several documented effects were no-ops.
 - Songs that loop without `Bxx` rendered forever.
+- `SEx` rows now replay first-tick effects on every repetition, and `S6x` lengthens each repetition. `SDx`, `SCx`, and `Jxx` count from the start of each repetition.
+- `DF0` and `D0F` (and `N`, `K`, `L` equivalents) slide on every tick, including the first.
+- Pattern-loop state survives pattern changes, and a `Bxx` to the right of a looping `SBx` cancels the loop.
+- A note fade in sample mode no longer cuts the note.
+- `Zxx` macros run every filter message they contain, substitute `z` in fixed macros, and reset the filter on `FA`/`FC`/`FF`. The default bank-select macro is `Bc 0 a 20 b`.
+- New notes restart the vibrato, tremolo, and panbrello waveforms. The panbrello offset holds until a panning command. Old Effects vibrato is inverted, and `S3x`–`S5x` values above 3 are ignored.
+- A false edit-history flag no longer misplaces the MIDI macro block. Song messages accept LF and CR LF line breaks.
 
 ### Changed
 - The public API was reshaped before the first tag:
