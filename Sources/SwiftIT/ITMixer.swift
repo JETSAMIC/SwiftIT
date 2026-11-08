@@ -319,9 +319,21 @@ public final class ITMixer: @unchecked Sendable {
         var isLoopJump = false
         var orderChanged = false
 
-        if let lr = loopRow {
+        if let lr = loopRow, lr < pattern.rowCount {
             targetRow = lr
             isLoopJump = true
+        } else if loopRow != nil {
+            // The loop start survives pattern changes, so it can lie past
+            // the end of this pattern; playback then moves on to the next
+            // order (LoopStartAfterPatternEnd.it).
+            guard let next = nextPlayableOrder(from: order + 1) else {
+                clearJumps()
+                songEnded()
+                return
+            }
+            targetOrder = next
+            targetRow = 0
+            orderChanged = true
         } else if jumpOrder != nil || breakRow != nil {
             let start = jumpOrder ?? order + 1
             targetRow = breakRow ?? 0
@@ -364,7 +376,7 @@ public final class ITMixer: @unchecked Sendable {
             if !isLoopJump { inPatternLoop = false }
         }
         if isLoopJump { inPatternLoop = true }
-        moveTo(order: targetOrder, row: targetRow, pattern: nextPattern, orderChanged: orderChanged)
+        moveTo(order: targetOrder, row: targetRow, pattern: nextPattern)
     }
 
     func clearJumps() {
@@ -373,13 +385,10 @@ public final class ITMixer: @unchecked Sendable {
         loopRow = nil
     }
 
-    func moveTo(order newOrder: Int, row newRow: Int, pattern newPattern: ITPattern, orderChanged: Bool) {
-        if orderChanged {
-            for ch in 0..<64 {
-                channels[ch].patternLoopStart = 0
-                channels[ch].patternLoopCount = 0
-            }
-        }
+    /// Move to a new song position. Pattern-loop state (`SB0` start row
+    /// and remaining count) deliberately survives order changes, as in
+    /// Impulse Tracker (LoopStartAfterPatternEnd.it).
+    func moveTo(order newOrder: Int, row newRow: Int, pattern newPattern: ITPattern) {
         order = newOrder
         row = newRow
         pattern = newPattern
@@ -407,7 +416,7 @@ public final class ITMixer: @unchecked Sendable {
         let p = patternFor(order: target.0)
         let r = target.1 < p.rowCount ? target.1 : 0
         visited.insert(positionKey(target.0, r))
-        moveTo(order: target.0, row: r, pattern: p, orderChanged: true)
+        moveTo(order: target.0, row: r, pattern: p)
     }
 
     // MARK: Random

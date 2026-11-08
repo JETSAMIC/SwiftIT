@@ -521,8 +521,13 @@ extension ITMixer {
         case Fx.a:
             if p > 0 { speed = Int(p) }
         case Fx.b:
+            guard !isRepeat else { break }
             jumpOrder = Int(p)
+            // A Bxx to the right of a looping SBx cancels the loop; one to
+            // its left does not (LoopBreak.it, sbx-priority.it).
+            loopRow = nil
         case Fx.c:
+            guard !isRepeat else { break }
             breakRow = Int(p)
         case Fx.d:
             if p != 0 { channels[ch].memVolumeSlide = p }

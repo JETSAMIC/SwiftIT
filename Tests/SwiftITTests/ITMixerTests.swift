@@ -122,6 +122,39 @@ struct ITMixerTests {
         #expect(m.isFinished)
     }
 
+    @Test("The SB0 loop start survives a pattern change")
+    func loopStartSurvivesPatternChange() throws {
+        // Pattern 0 sets the loop start at row 2; pattern 1 loops without SB0.
+        let p0 = ITBuilder.pattern(rows: 3, [Self.fx(2, "S", 0xB0)])
+        let p1 = ITBuilder.pattern(rows: 4, [Self.fx(3, "S", 0xB1)])
+        let f = try Self.file(orders: [0, 1, 255], patterns: [p0, p1])
+        let m = ITMixer(file: f, sampleRate: 44_100)
+        #expect(Self.rowStarts(m) == [[0, 0], [0, 1], [0, 2], [1, 0], [1, 1], [1, 2], [1, 3], [1, 2], [1, 3]])
+    }
+
+    @Test("A loop start past the pattern end continues into the next order")
+    func loopStartPastPatternEnd() throws {
+        let p0 = ITBuilder.pattern(rows: 6, [Self.fx(5, "S", 0xB0)])
+        let p1 = ITBuilder.pattern(rows: 2, [Self.fx(1, "S", 0xB1)])
+        let p2 = ITBuilder.pattern(rows: 1, [])
+        let f = try Self.file(orders: [0, 1, 2, 255], patterns: [p0, p1, p2])
+        let m = ITMixer(file: f, sampleRate: 44_100)
+        let starts = Self.rowStarts(m)
+        #expect(Array(starts.suffix(3)) == [[1, 0], [1, 1], [2, 0]])
+    }
+
+    @Test("Bxx right of a looping SBx cancels the loop; left of it, the loop wins")
+    func loopVersusJump() throws {
+        let p1 = ITBuilder.pattern(rows: 1, [])
+        let right = ITBuilder.pattern(rows: 2, [Self.fx(0, "S", 0xB0), Self.fx(1, "S", 0xB1), Self.fx(1, "B", 1, ch: 1)])
+        var m = ITMixer(file: try Self.file(orders: [0, 1, 255], patterns: [right, p1]), sampleRate: 44_100)
+        #expect(Self.rowStarts(m) == [[0, 0], [0, 1], [1, 0]])
+
+        let left = ITBuilder.pattern(rows: 2, [Self.fx(0, "S", 0xB0), Self.fx(1, "B", 1), Self.fx(1, "S", 0xB1, ch: 1)])
+        m = ITMixer(file: try Self.file(orders: [0, 1, 255], patterns: [left, p1]), sampleRate: 44_100)
+        #expect(Self.rowStarts(m) == [[0, 0], [0, 1], [0, 0], [0, 1], [1, 0]])
+    }
+
     @Test("Endless pattern-loop revisits are bounded")
     func revisitBound() throws {
         let p = ITBuilder.pattern(rows: 2, [Self.fx(0, "S", 0xB0), Self.fx(1, "S", 0xBF)])
