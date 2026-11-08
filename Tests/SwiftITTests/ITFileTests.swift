@@ -475,4 +475,33 @@ struct ITFileTests {
         #expect(ITMIDIConfiguration.filterAction(macro: "F0 F0 00 z", parameter: 99) == .cutoff(99))
         #expect(ITMIDIConfiguration.filterAction(macro: "9c n v", parameter: 1) == nil)
     }
+
+    @Test("Special bit 1 without an edit history: the MIDI block is still found")
+    func editHistoryFlagWithoutHistory() throws {
+        // Old writers set the edit-history bit but wrote no count at all.
+        // Reading the macro text as a count would run past the first
+        // instrument, so the history is treated as absent.
+        var config = [UInt8](repeating: 0, count: 4896)
+        let sf0 = Array("F0F000z".utf8)
+        config.replaceSubrange(9 * 32..<9 * 32 + sf0.count, with: sf0)
+        let start = Array("FF".utf8)
+        config.replaceSubrange(0..<2, with: start)
+        var b = ITBuilder()
+        b.special = 0x000A
+        b.trailer = config
+        b.instruments = [InstrumentSpec().bytes()]
+        let file = try ITFile(bytes: b.build())
+        let midi = try #require(file.midiConfiguration)
+        #expect(midi.global[0] == "FF")
+        #expect(midi.parametered[0] == "F0F000z")
+    }
+
+    @Test("Message line breaks: CR, LF, and CR LF each give one newline")
+    func messageLineEndings() throws {
+        var b = ITBuilder()
+        b.special = 0x0001
+        b.message = Array("a\rb\nc\r\nd".utf8) + [0]
+        let file = try ITFile(bytes: b.build())
+        #expect(file.message == "a\nb\nc\nd")
+    }
 }

@@ -202,27 +202,40 @@ public struct ITFile: Sendable {
         let smpPtrs = (0..<smpNum).map { Int(bytes.u32(smpTable + $0 * 4)) }
         let patPtrs = (0..<patNum).map { Int(bytes.u32(patTable + $0 * 4)) }
 
-        // Song message.
+        // Song message. Impulse Tracker ends lines with CR; ChibiTracker
+        // writes LF and some converters CR LF. Each form is one line break.
         if special.contains(.hasMessage), messageLength > 0,
            messageOffset > 0, messageOffset < bytes.count {
             let available = min(messageLength, bytes.count - messageOffset)
             var scalars = String.UnicodeScalarView()
+            var previous: UInt8 = 0
             for i in 0..<available {
                 let b = bytes[messageOffset + i]
                 if b == 0 { break }
-                scalars.append(b == 0x0D ? "\n" : CP437.scalar(for: b))
+                if b == 0x0A && previous == 0x0D {
+                    previous = b
+                    continue
+                }
+                scalars.append(b == 0x0D || b == 0x0A ? "\n" : CP437.scalar(for: b))
+                previous = b
             }
             message = String(scalars)
         } else {
             message = nil
         }
 
-        // Edit history, then MIDI configuration.
+        // Edit history, then MIDI configuration. Many writers set Special
+        // bit 1 without writing a history (some not even the count), so a
+        // history that would run into the first structure a parapointer
+        // names is treated as absent and the cursor stays put.
         var cursor = tablesEnd
         if special.contains(.hasEditHistory), bytes.contains(offset: cursor, length: 2) {
             let entries = Int(bytes.u16(cursor))
-            cursor += 2
-            if bytes.contains(offset: cursor, length: entries * 8) { cursor += entries * 8 }
+            let historyEnd = cursor + 2 + entries * 8
+            let firstStructure = (insPtrs + smpPtrs + patPtrs + (special.contains(.hasMessage) ? [messageOffset] : []))
+                .filter { $0 >= tablesEnd }
+                .min() ?? bytes.count
+            if historyEnd <= min(firstStructure, bytes.count) { cursor = historyEnd }
         }
         midiConfiguration = special.contains(.hasMIDIConfiguration)
             ? ITMIDIConfiguration.parse(bytes: bytes, at: cursor) : nil
