@@ -139,7 +139,69 @@ struct ITMixerTests {
         let f = try Self.file(speed: 4, patterns: [p])
         let m = ITMixer(file: f, sampleRate: 44_100)
         m.runTicks(1)
-        #expect(m.rowTicks == 4 * 3 + 3)
+        // PatternDelays.it: (speed + tick delay) x (1 + row delay).
+        #expect(m.rowTicks == (4 + 3) * 3)
+        #expect(m.repeatTicks == 7)
+    }
+
+    @Test("Only the first SEx on a row counts, even SE0")
+    func firstPatternDelayWins() throws {
+        let p = ITBuilder.pattern(rows: 1, [Self.fx(0, "S", 0xE0), Self.fx(0, "S", 0xE3, ch: 1)])
+        let m = ITMixer(file: try Self.file(speed: 4, patterns: [p]), sampleRate: 44_100)
+        m.runTicks(1)
+        #expect(m.rowTicks == 4)
+    }
+
+    @Test("SEx repetitions re-run first-tick effects but not the volume column")
+    func patternDelayRepeatsFirstTick() throws {
+        // FF2 is a fine slide (8 units) on each of the three first ticks.
+        let fine = ITBuilder.pattern(rows: 1, [Self.note(0, 60, fx: "F", 0xF2), Self.fx(0, "S", 0xE2, ch: 1)])
+        var m = ITMixer(file: try Self.file(speed: 3, patterns: [fine]), sampleRate: 44_100)
+        m.runTicks(9)
+        #expect(abs(m.channels[0].frequency - 8363 * pow(2, 24.0 / 768)) < 1e-6)
+
+        // Volume column b2 (fine down 2) runs once (FineVolColSlide.it).
+        let vol = ITBuilder.pattern(rows: 1, [Self.note(0, 60, vol: 75 + 2), Self.fx(0, "S", 0xE2, ch: 1)])
+        m = ITMixer(file: try Self.file(speed: 3, patterns: [vol]), sampleRate: 44_100)
+        m.runTicks(9)
+        #expect(m.channels[0].noteVolume == 62)
+    }
+
+    @Test("A delayed note retriggers on every SEx repetition")
+    func noteDelayRetriggersPerRepetition() throws {
+        // f1 (volume-column pitch slide up) moves the pitch after the note;
+        // the retrigger on the second repetition resets it.
+        let p = ITBuilder.pattern(rows: 1, [Self.note(0, 60, vol: 115 + 1, fx: "S", 0xD1), Self.fx(0, "S", 0xE1, ch: 1)])
+        let m = ITMixer(file: try Self.file(speed: 3, patterns: [p]), sampleRate: 44_100)
+        m.runTicks(3)
+        #expect(m.channels[0].frequency > 8363)
+        m.runTicks(2)
+        #expect(m.channels[0].frequency == 8363)
+    }
+
+    @Test("SDx may use the S6x tick delay; beyond it the cell is dropped")
+    func noteDelayWithTickDelay() throws {
+        let p = ITBuilder.pattern(rows: 1, [
+            Self.note(0, 60, fx: "S", 0xD4), Self.note(0, 60, ch: 1, fx: "S", 0xD5), Self.fx(0, "S", 0x62, ch: 2),
+        ])
+        let m = ITMixer(file: try Self.file(speed: 3, patterns: [p]), sampleRate: 44_100)
+        m.runTicks(5)
+        #expect(m.foregroundVoice(0) != nil)
+        #expect(m.foregroundVoice(1) == nil)
+    }
+
+    @Test("Arpeggio counts ticks from each SEx repetition, through S6x")
+    func arpeggioTickCounter() throws {
+        let p = ITBuilder.pattern(rows: 1, [
+            Self.note(0, 60, fx: "J", 0x47), Self.fx(0, "S", 0x61, ch: 1), Self.fx(0, "S", 0xE1, ch: 2),
+        ])
+        let m = ITMixer(file: try Self.file(speed: 4, patterns: [p]), sampleRate: 44_100)
+        var offsets: [Int] = []
+        for _ in 0..<10 {
+            m.runTicks(1)
+            offsets.append(m.channels[0].arpeggioOffset)
+        }
+        #expect(offsets == [0, 4, 7, 0, 4, 0, 4, 7, 0, 4])
     }
 
     @Test("Axx sets speed, Txx tempo, T0x/T1x slide tempo")

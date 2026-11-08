@@ -93,6 +93,9 @@ public final class ITMixer: @unchecked Sendable {
     var row = 0
     var tick = 0
     var rowTicks = 6
+    /// Ticks in one repetition of the row: speed plus `S6x` tick delay.
+    /// `SEx` repeats the row; every repetition starts with a first tick.
+    var repeatTicks = 6
     var speed = 6
     var tempo = 125
     var globalVolume = 128
@@ -281,6 +284,11 @@ public final class ITMixer: @unchecked Sendable {
         }
         if tick == 0 {
             startRow()
+        } else if tick % repeatTicks == 0 {
+            // A pattern-delay repetition: effects run as on a first tick,
+            // but notes are not read again (OpenMPT test case
+            // PatternDelaysRetrig.it).
+            for ch in 0..<64 { repeatRow(channel: ch) }
         } else {
             for ch in 0..<64 { runTick(channel: ch) }
         }
@@ -298,7 +306,10 @@ public final class ITMixer: @unchecked Sendable {
         for ch in 0..<64 {
             processRow(channel: ch, cell: pattern[row: row, channel: ch])
         }
-        rowTicks = speed * (1 + patternDelay) + fineDelay
+        // Tick delays accumulate and are part of each repetition; only the
+        // first SEx counts (OpenMPT test case PatternDelays.it).
+        repeatTicks = max(1, speed + fineDelay)
+        rowTicks = repeatTicks * (1 + patternDelay)
     }
 
     func advanceRow() {

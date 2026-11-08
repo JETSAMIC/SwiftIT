@@ -42,28 +42,40 @@ extension ITMixer {
         }
         channels[ch].effect = effect
         channels[ch].param = param
-        channels[ch].volumeCommand = cell.volumeCommand
+        channels[ch].volumeCommand = nil
 
         // SAx must be known before the note so Oxx can use it.
         if effect == Fx.s && param >> 4 == 0xA { channels[ch].highOffset = Int(param & 0x0F) }
 
         if effect == Fx.s && param >> 4 == 0xD {
             // Note delay: the note, instrument, and volume column wait.
-            let delay = max(1, Int(param & 0x0F))
-            if delay < speed {
-                channels[ch].noteDelayTick = delay
-                channels[ch].delayedCell = cell
-            }
+            // A delay that never comes round within one repetition of the
+            // row (speed + S6x ticks) drops the cell (tickdelay.it).
+            channels[ch].noteDelayTick = max(1, Int(param & 0x0F))
+            channels[ch].delayedCell = cell
         } else {
             triggerCell(channel: ch, cell: cell)
         }
         firstTickEffect(channel: ch)
     }
 
+    /// First tick of an `SEx` repetition: per-row modulation restarts and
+    /// the effect column runs its first-tick behaviour again. Notes and
+    /// the volume column are not re-read (FineVolColSlide.it), and the
+    /// row-structure commands (`SBx`, `S6x`, `SEx`) do not run twice.
+    func repeatRow(channel ch: Int) {
+        channels[ch].vibratoOffset = 0
+        channels[ch].arpeggioOffset = 0
+        channels[ch].tremoloOffset = 0
+        channels[ch].tremorMute = false
+        firstTickEffect(channel: ch, isRepeat: true)
+    }
+
     /// Note / instrument / volume-column handling for one cell (on tick 0,
     /// or on the `SDx` tick).
     func triggerCell(channel ch: Int, cell: ITPattern.Cell) {
         let effect = channels[ch].effect
+        channels[ch].volumeCommand = cell.volumeCommand
         var porta = effect == Fx.g || effect == Fx.l
         if case .tonePortamento? = cell.volumeCommand { porta = true }
         if cell.instrument != 0 { channels[ch].lastInstrument = Int(cell.instrument) }
@@ -502,7 +514,7 @@ extension ITMixer {
 
     // MARK: - First tick
 
-    func firstTickEffect(channel ch: Int) {
+    func firstTickEffect(channel ch: Int, isRepeat: Bool = false) {
         let effect = channels[ch].effect
         let p = channels[ch].param
         switch effect {
@@ -559,7 +571,8 @@ extension ITMixer {
             if p & 0x0F != 0 { channels[ch].tremoloDepth = Int(p & 0x0F) }
             if !oldEffects { tremolo(ch) }
         case Fx.s:
-            specialFirstTick(ch, p)
+            let rowStructure = [0x6, 0xB, 0xE].contains(p >> 4)
+            if !(isRepeat && rowStructure) { specialFirstTick(ch, p) }
         case Fx.t:
             if p >= 0x20 {
                 tempo = Int(p)
@@ -690,16 +703,23 @@ extension ITMixer {
     // MARK: - Other ticks
 
     func runTick(channel ch: Int) {
-        if tick == channels[ch].noteDelayTick, let cell = channels[ch].delayedCell {
-            channels[ch].delayedCell = nil
+        // SDx, SCx, and Jxx count ticks from the start of each SEx
+        // repetition (PatternDelay-NoteDelay.it, JxxTicks.it), so a
+        // delayed note retriggers on every repetition.
+        let local = tick % repeatTicks
+        var triggeredNow = false
+        if local == channels[ch].noteDelayTick, let cell = channels[ch].delayedCell {
             triggerCell(channel: ch, cell: cell)
+            triggeredNow = true
         }
-        if tick == channels[ch].noteCutTick {
+        if local == channels[ch].noteCutTick {
             if let v = foregroundVoice(ch) { voices[v].active = false }
             channels[ch].voice = -1
         }
 
-        volumeColumnTick(channel: ch)
+        // The delayed cell's tick is its first tick: the volume column
+        // already ran its first-tick part in triggerCell.
+        if !triggeredNow { volumeColumnTick(channel: ch) }
 
         let p = channels[ch].param
         switch channels[ch].effect {
@@ -717,7 +737,7 @@ extension ITMixer {
             tremor(ch)
         case Fx.j:
             let m = channels[ch].memArpeggio
-            switch tick % 3 {
+            switch local % 3 {
             case 1: channels[ch].arpeggioOffset = Int(m >> 4)
             case 2: channels[ch].arpeggioOffset = Int(m & 0x0F)
             default: channels[ch].arpeggioOffset = 0
