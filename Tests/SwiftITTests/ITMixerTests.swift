@@ -380,11 +380,22 @@ struct ITMixerTests {
         m.runTicks(4)
         #expect(m.channels[0].noteVolume == 29)
 
-        // DF0 is a regular slide up by 15, not a fine slide.
-        let up = ITBuilder.pattern(rows: 1, [Self.note(0, 60, vol: 10, fx: "D", 0xF0)])
+        // DF0 is not a fine slide: it slides up by 15 on every tick,
+        // the first included (ITTECH.TXT; OpenMPT effect reference).
+        let up = ITBuilder.pattern(rows: 1, [Self.note(0, 2, vol: 1, fx: "D", 0xF0)])
         m = ITMixer(file: try Self.file(speed: 3, patterns: [up]), sampleRate: 44_100)
-        m.runTicks(3)
-        #expect(m.channels[0].noteVolume == 40)
+        m.runTicks(1)
+        #expect(m.channels[0].noteVolume == 16)
+        m.runTicks(2)
+        #expect(m.channels[0].noteVolume == 46)
+
+        // D0F likewise slides down on every tick; N0F does the same to
+        // the channel volume.
+        let down = ITBuilder.pattern(rows: 1, [Self.note(0, 60, vol: 64, fx: "D", 0x0F), Self.fx(0, "N", 0x0F, ch: 1)])
+        m = ITMixer(file: try Self.file(speed: 3, patterns: [down]), sampleRate: 44_100)
+        m.runTicks(1)
+        #expect(m.channels[0].noteVolume == 49)
+        #expect(m.channels[1].channelVolume == 49)
     }
 
     @Test("Volume column slides keep their own memory")

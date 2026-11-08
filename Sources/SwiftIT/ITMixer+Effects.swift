@@ -382,13 +382,17 @@ extension ITMixer {
     }
 
     /// Resolve a `D`-style slide parameter into a signed delta for this
-    /// tick. `0x0F`/`0xF0` style: `x0` up, `0y` down every non-first
-    /// tick; `xF` fine up, `Fy` fine down on the first tick; any other
-    /// combination does nothing (IT ignores it).
-    func slideDelta(_ param: UInt8, firstTick: Bool) -> Int {
+    /// tick, testing in ITTECH.TXT's order `Dx0`, `D0x`, `DxF`, `DFx`:
+    /// `x0` up and `0y` down every non-first tick; `xF` fine up and `Fy`
+    /// fine down on the first tick; any other combination does nothing.
+    ///
+    /// With `fastAtF` (the `D`, `K`, `L`, and `N` slides), `DF0` and
+    /// `D0F` slide by 15 on every tick including the first, as
+    /// ITTECH.TXT describes for S3M compatibility.
+    func slideDelta(_ param: UInt8, firstTick: Bool, fastAtF: Bool = false) -> Int {
         let hi = Int(param >> 4), lo = Int(param & 0x0F)
-        if lo == 0 { return firstTick ? 0 : hi }
-        if hi == 0 { return firstTick ? 0 : -lo }
+        if lo == 0 { return firstTick && !(fastAtF && hi == 0x0F) ? 0 : hi }
+        if hi == 0 { return firstTick && !(fastAtF && lo == 0x0F) ? 0 : -lo }
         if lo == 0x0F { return firstTick ? hi : 0 }
         if hi == 0x0F { return firstTick ? -lo : 0 }
         return 0
@@ -459,7 +463,7 @@ extension ITMixer {
     // MARK: - Volume / pan helpers
 
     func volumeSlide(_ ch: Int, firstTick: Bool) {
-        let d = slideDelta(channels[ch].memVolumeSlide, firstTick: firstTick)
+        let d = slideDelta(channels[ch].memVolumeSlide, firstTick: firstTick, fastAtF: true)
         channels[ch].noteVolume = min(max(channels[ch].noteVolume + d, 0), 64)
     }
 
@@ -564,7 +568,7 @@ extension ITMixer {
             if p <= 64 { channels[ch].channelVolume = Int(p) }
         case Fx.n:
             if p != 0 { channels[ch].memChannelVolumeSlide = p }
-            let d = slideDelta(channels[ch].memChannelVolumeSlide, firstTick: true)
+            let d = slideDelta(channels[ch].memChannelVolumeSlide, firstTick: true, fastAtF: true)
             channels[ch].channelVolume = min(max(channels[ch].channelVolume + d, 0), 64)
         case Fx.o:
             if p != 0 { channels[ch].memOffset = p }
@@ -766,7 +770,7 @@ extension ITMixer {
             tonePortamento(ch)
             volumeSlide(ch, firstTick: false)
         case Fx.n:
-            let d = slideDelta(channels[ch].memChannelVolumeSlide, firstTick: false)
+            let d = slideDelta(channels[ch].memChannelVolumeSlide, firstTick: false, fastAtF: true)
             channels[ch].channelVolume = min(max(channels[ch].channelVolume + d, 0), 64)
         case Fx.p:
             panSlide(ch, firstTick: false)
