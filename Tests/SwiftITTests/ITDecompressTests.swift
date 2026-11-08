@@ -43,6 +43,17 @@ struct ITDecompressTests {
         return (w.block, deltas)
     }
 
+    @Test("Worked example from IT-Format.md section 5.4")
+    func specWorkedExample() {
+        // 0x101@9 (w -> 2), 1@2 (+1), 3@2 (-1), 2@2 + 3@3 (w -> 5), 0x1E@5 (-2)
+        let block: [UInt8] = [0x03, 0x00, 0x01, 0xDB, 0x79]
+        let v214 = ITDecompress.decompress(bytes: block, offset: 0, length: 3, is16Bit: false, it215: false)
+        #expect(v214.samples == [1 << 8, 0, -2 << 8])
+        #expect(v214.isComplete && v214.endOffset == 5)
+        let v215 = ITDecompress.decompress(bytes: block, offset: 0, length: 3, is16Bit: false, it215: true)
+        #expect(v215.samples == [1 << 8, 1 << 8, -1 << 8])
+    }
+
     @Test("8-bit IT 2.14 stream with every width-change method")
     func eightBit214() {
         let (block, deltas) = Self.eightBitBlock()
