@@ -671,20 +671,19 @@ extension ITMixer {
         }
     }
 
+    /// `Zxx`: run parametered macro `SFx` (`Z00`...`Z7F`) or fixed macro
+    /// `xx - 0x80` (`Z80`...`ZFF`). In both cases `z` inserts the raw
+    /// command byte, and every filter message in the macro is applied.
     func midiMacro(_ ch: Int, _ p: UInt8) {
-        let macro: String
-        let z: Int
-        if p < 0x80 {
-            macro = midi.parametered[channels[ch].activeMacro & 15]
-            z = Int(p)
-        } else {
-            macro = midi.fixed[Int(p) - 0x80]
-            z = 0
-        }
-        switch ITMIDIConfiguration.filterAction(macro: macro, parameter: z) {
-        case .cutoff(let value)?: channels[ch].cutoff = value
-        case .resonance(let value)?: channels[ch].resonance = value
-        case nil: break
+        let macro = p < 0x80 ? midi.parametered[channels[ch].activeMacro & 15] : midi.fixed[Int(p) - 0x80]
+        for action in ITMIDIConfiguration.filterActions(macro: macro, parameter: Int(p)) {
+            switch action {
+            case .cutoff(let value): channels[ch].cutoff = value
+            case .resonance(let value): channels[ch].resonance = value
+            case .reset:
+                channels[ch].cutoff = 127
+                channels[ch].resonance = 0
+            }
         }
     }
 

@@ -453,6 +453,33 @@ struct ITMixerTests {
         #expect(n.channels[0].cutoff == 30 && n.channels[0].resonance == 100)
     }
 
+    @Test("Fixed Zxx macros receive the raw parameter and may hold several messages")
+    func fixedMacroWithParameter() throws {
+        var config = [UInt8](repeating: 0, count: 4896)
+        func put(_ index: Int, _ text: String) {
+            let bytes = Array(text.utf8)
+            config.replaceSubrange(index * 32..<index * 32 + bytes.count, with: bytes)
+        }
+        put(9, "F0F000z")                    // SF0
+        put(25 + 0x10, "F0F000z F0F00130")   // Z90
+        put(25 + 0x7F, "FF")                 // ZFF
+        let p = ITBuilder.pattern(rows: 3, [
+            Self.note(0, 60, fx: "Z", 0x10), Self.fx(1, "Z", 0x90), Self.fx(2, "Z", 0xFF),
+        ])
+        let f = try Self.file(patterns: [p]) {
+            $0.special = 0x0008
+            $0.trailer = config
+        }
+        let m = ITMixer(file: f, sampleRate: 44_100)
+        m.runTicks(1)
+        #expect(m.channels[0].cutoff == 0x10 && m.channels[0].resonance == 0)
+        m.runTicks(6)
+        // z = 0x90 (clamped to the 7-bit range), then the second message.
+        #expect(m.channels[0].cutoff == 127 && m.channels[0].resonance == 0x30)
+        m.runTicks(6)
+        #expect(m.channels[0].cutoff == 127 && m.channels[0].resonance == 0)
+    }
+
     // MARK: Rendering
 
     static func render(_ m: ITMixer, frames: Int) -> (Int, [Float]) {

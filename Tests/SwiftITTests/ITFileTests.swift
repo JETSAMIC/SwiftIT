@@ -476,6 +476,22 @@ struct ITFileTests {
         #expect(ITMIDIConfiguration.filterAction(macro: "9c n v", parameter: 1) == nil)
     }
 
+    @Test("Macros: several messages per macro, raw z, case-sensitive variables, FA/FC/FF reset")
+    func macroEvaluation() {
+        typealias C = ITMIDIConfiguration
+        // MultiZxx: one macro may set both cutoff and resonance.
+        #expect(C.filterActions(macro: "F0F00040 F0F00120", parameter: 0) == [.cutoff(0x40), .resonance(0x20)])
+        // MacroExtendedParam: z is the raw command byte, 0x80...0xFF included.
+        #expect(C.filterActions(macro: "F0F000z", parameter: 0x90) == [.cutoff(127)])
+        #expect(C.filterActions(macro: "F0F001z", parameter: 0x10) == [.resonance(0x10)])
+        // Lowercase a/b/c are variables, so this is not a filter message.
+        #expect(C.filterActions(macro: "F0F000c", parameter: 0) == [])
+        #expect(C.filterActions(macro: "f0f000z", parameter: 5) == [.cutoff(5)])
+        // ZxxSecrets: FA, FC, and FF reset the filter.
+        #expect(C.filterActions(macro: "FC", parameter: 0) == [.reset])
+        #expect(C.impulseTrackerDefault.global[7] == "Bc 0 a 20 b")
+    }
+
     @Test("Special bit 1 without an edit history: the MIDI block is still found")
     func editHistoryFlagWithoutHistory() throws {
         // Old writers set the edit-history bit but wrote no count at all.
