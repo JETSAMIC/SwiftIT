@@ -297,13 +297,11 @@ extension ITMixer {
         if !voices[i].volumeEnvelopeOn || env.hasLoop { voices[i].fading = true }
     }
 
-    /// Note fade. Sample mode has no fadeout, so the note is cut.
+    /// Note fade. Sample mode has no fadeout, so a note fade there does
+    /// nothing and the sample keeps playing (NoteFade-SmpMode.it).
     func startFade(voice i: Int) {
-        if instrumentMode && voices[i].instrument >= 0 {
-            voices[i].fading = true
-        } else {
-            voices[i].active = false
-        }
+        guard instrumentMode && voices[i].instrument >= 0 else { return }
+        voices[i].fading = true
     }
 
     // MARK: - Volume column

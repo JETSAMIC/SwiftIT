@@ -395,6 +395,22 @@ struct ITMixerTests {
         #expect(m.foregroundVoice(0) == nil)
     }
 
+    @Test("Note fade: does nothing in sample mode, fades in instrument mode")
+    func noteFadeModes() throws {
+        let p = ITBuilder.pattern(rows: 2, [Self.note(0, 60), CellSpec(row: 1, channel: 0, note: 200)])
+        let sampleMode = ITMixer(file: try Self.file(patterns: [p]), sampleRate: 44_100)
+        sampleMode.runTicks(8)
+        let v = try #require(sampleMode.foregroundVoice(0))
+        #expect(!sampleMode.voices[v].fading && sampleMode.voices[v].keyOn)
+
+        var ins = InstrumentSpec()
+        ins.fadeOut = 16
+        let instrumentMode = ITMixer(file: try Self.file(flags: 0x0D, patterns: [p], instruments: [ins]), sampleRate: 44_100)
+        instrumentMode.runTicks(8)
+        let w = try #require(instrumentMode.foregroundVoice(0))
+        #expect(instrumentMode.voices[w].fading)
+    }
+
     @Test("Oxx starts the sample at xx * 256; SAx adds the high byte")
     func sampleOffset() throws {
         var big = Self.loopSample
