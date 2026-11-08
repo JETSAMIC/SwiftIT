@@ -315,6 +315,57 @@ struct ITMixerTests {
         #expect(offsets == [0, 4, 7, 0, 4, 7])
     }
 
+    @Test("A new note restarts the LFO waveforms; tone portamento does not")
+    func lfoRetrigger() throws {
+        let fresh = ITBuilder.pattern(rows: 2, [Self.note(0, 60, fx: "H", 0x48), Self.note(1, 62)])
+        var m = ITMixer(file: try Self.file(speed: 3, patterns: [fresh]), sampleRate: 44_100)
+        m.runTicks(3)
+        #expect(m.channels[0].vibratoPosition == 12)
+        m.runTicks(1)
+        #expect(m.channels[0].vibratoPosition == 0)
+
+        let porta = ITBuilder.pattern(rows: 2, [Self.note(0, 60, fx: "H", 0x48), Self.note(1, 62, ins: nil, fx: "G", 0x10)])
+        m = ITMixer(file: try Self.file(speed: 3, patterns: [porta]), sampleRate: 44_100)
+        m.runTicks(4)
+        #expect(m.channels[0].vibratoPosition == 12)
+    }
+
+    @Test("The panbrello offset holds until a panning command")
+    func panbrelloHold() throws {
+        let p = ITBuilder.pattern(rows: 3, [Self.note(0, 60, fx: "Y", 0x48), Self.fx(2, "X", 0x80)])
+        let m = ITMixer(file: try Self.file(speed: 4, patterns: [p]), sampleRate: 44_100)
+        m.runTicks(4)
+        let held = m.channels[0].panbrelloOffset
+        #expect(held != 0)
+        m.runTicks(4)
+        #expect(m.channels[0].panbrelloOffset == held)
+        m.runTicks(1)
+        #expect(m.channels[0].panbrelloOffset == 0)
+    }
+
+    @Test("S3x waveforms above 3 are ignored")
+    func waveformRange() throws {
+        let p = ITBuilder.pattern(rows: 2, [Self.fx(0, "S", 0x32), Self.fx(1, "S", 0x34)])
+        let m = ITMixer(file: try Self.file(patterns: [p]), sampleRate: 44_100)
+        m.runTicks(7)
+        #expect(m.channels[0].vibratoWaveform == 2)
+    }
+
+    @Test("Old Effects vibrato is twice as deep and runs the other way")
+    func oldEffectsVibrato() throws {
+        let p = ITBuilder.pattern(rows: 1, [Self.note(0, 60, fx: "H", 0x48)])
+        let modern = ITMixer(file: try Self.file(flags: 0x09, speed: 4, patterns: [p]), sampleRate: 44_100)
+        modern.runTicks(3)
+        let old = ITMixer(file: try Self.file(flags: 0x19, speed: 4, patterns: [p]), sampleRate: 44_100)
+        old.runTicks(3)
+        // The modern channel has also run tick 0, so compare the same phase.
+        let phase = modern.channels[0].vibratoPosition - 4
+        let value = Waveforms.sine[phase & 63]
+        #expect(modern.channels[0].vibratoOffset == (value * 32) >> 6)
+        #expect(old.channels[0].vibratoOffset == -((Waveforms.sine[4] * 32) >> 5))
+        #expect(old.channels[0].vibratoOffset < 0)
+    }
+
     // MARK: Volume
 
     @Test("Dxy: regular slides on non-first ticks, fine slides on the first")

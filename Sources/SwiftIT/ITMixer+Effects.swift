@@ -27,7 +27,8 @@ extension ITMixer {
         channels[ch].vibratoOffset = 0
         channels[ch].arpeggioOffset = 0
         channels[ch].tremoloOffset = 0
-        channels[ch].panbrelloOffset = 0
+        // The panbrello offset is held across rows until a panning command
+        // or a new note (PanbrelloHold.it).
         channels[ch].tremorMute = false
         channels[ch].noteCutTick = -1
         channels[ch].noteDelayTick = -1
@@ -156,6 +157,13 @@ extension ITMixer {
         }
 
         let instrument: ITInstrument? = instrumentIndex >= 0 ? file.instruments[instrumentIndex] : nil
+
+        // A new note restarts the vibrato, tremolo, and panbrello
+        // waveforms and drops a held panbrello offset.
+        channels[ch].vibratoPosition = 0
+        channels[ch].tremoloPosition = 0
+        channels[ch].panbrelloPosition = 0
+        channels[ch].panbrelloOffset = 0
 
         // Channel state picked up by the new note.
         if instrumentGiven { channels[ch].noteVolume = Int(sample.defaultVolume) }
@@ -322,6 +330,7 @@ extension ITMixer {
             if x != 0 { setPitchSlideMemory(ch, x * 4) }
         case .panning(let p):
             channels[ch].pan = Int(p) * 4
+            channels[ch].panbrelloOffset = 0
             channels[ch].surround = false
         case .tonePortamento(let x):
             if x != 0 { setTonePortaMemory(ch, volumeColumnPortaSpeeds[Int(x)]) }
@@ -436,8 +445,9 @@ extension ITMixer {
     func vibrato(_ ch: Int) {
         let c = channels[ch]
         let value = Waveforms.value(c.vibratoWaveform, c.vibratoPosition, random: &random)
-        let shift = oldEffects ? 5 : 6
-        channels[ch].vibratoOffset = (value * c.vibratoDepth) >> shift
+        // Old Effects: twice the depth, and the waveform runs the other
+        // way (S3M period sense; vibrato-oldfx.it).
+        channels[ch].vibratoOffset = oldEffects ? -((value * c.vibratoDepth) >> 5) : (value * c.vibratoDepth) >> 6
         channels[ch].vibratoPosition = (c.vibratoPosition + c.vibratoSpeed) & 63
     }
 
@@ -590,6 +600,7 @@ extension ITMixer {
             globalVolume = min(max(globalVolume + d, 0), 128)
         case Fx.x:
             channels[ch].pan = Int(p) == 255 ? 256 : Int(p)
+            channels[ch].panbrelloOffset = 0
             channels[ch].surround = false
         case Fx.y:
             if p >> 4 != 0 { channels[ch].panbrelloSpeed = Int(p >> 4) }
@@ -608,19 +619,22 @@ extension ITMixer {
         let d = -slideDelta(channels[ch].memPanSlide, firstTick: firstTick)
         guard d != 0 else { return }
         channels[ch].pan = min(max(channels[ch].pan + d * 4, 0), 256)
+        channels[ch].panbrelloOffset = 0
         channels[ch].surround = false
     }
 
     func specialFirstTick(_ ch: Int, _ p: UInt8) {
         let x = Int(p & 0x0F)
         switch p >> 4 {
-        case 0x3: channels[ch].vibratoWaveform = x & 3
-        case 0x4: channels[ch].tremoloWaveform = x & 3
-        case 0x5: channels[ch].panbrelloWaveform = x & 3
+        // ITTECH.TXT defines waveforms 0...3 only; larger values are ignored.
+        case 0x3: if x < 4 { channels[ch].vibratoWaveform = x }
+        case 0x4: if x < 4 { channels[ch].tremoloWaveform = x }
+        case 0x5: if x < 4 { channels[ch].panbrelloWaveform = x }
         case 0x6: fineDelay += x
         case 0x7: instrumentControl(ch, x)
         case 0x8:
             channels[ch].pan = min((x * 256 + 7) / 15, 256)
+            channels[ch].panbrelloOffset = 0
             channels[ch].surround = false
         case 0x9:
             if x == 0 { channels[ch].surround = false }
